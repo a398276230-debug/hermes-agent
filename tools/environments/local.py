@@ -776,6 +776,9 @@ def _find_bash() -> str:
     for candidate in (
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
         os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
+        r"D:\Git\bin\bash.exe",
+        r"E:\Git\bin\bash.exe",
+        r"F:\Git\bin\bash.exe",
         os.path.join(_local_appdata, "Programs", "Git", "bin", "bash.exe") if _local_appdata else "",
     ):
         if candidate and os.path.isfile(candidate) and candidate not in candidates:
