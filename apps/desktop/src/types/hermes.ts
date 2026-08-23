@@ -157,6 +157,7 @@ export interface MemoryProviderConfig {
 
 export interface CustomEndpoint {
   api_key_preview?: null | string
+  api_mode?: null | string
   base_url: string
   context_length?: null | number
   discover_models: boolean
@@ -182,6 +183,7 @@ export interface CustomEndpointsResponse {
 
 export interface CustomEndpointUpdate {
   api_key?: string
+  api_mode?: string
   base_url: string
   context_length?: number
   discover_models?: boolean

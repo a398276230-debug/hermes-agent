@@ -8262,6 +8262,7 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
                 "model": endpoint_model,
                 "models": models,
                 "context_length": raw_entry.get("context_length"),
+                "api_mode": raw_entry.get("api_mode"),
                 "discover_models": bool(raw_entry.get("discover_models", True)),
                 "has_api_key": has_api_key,
                 "api_key_preview": api_key_preview,
@@ -8355,6 +8356,11 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
         "model": model,
         "discover_models": bool(body.discover_models),
     })
+    # Save api_mode from the form (empty string = auto-detect = remove override)
+    if body.api_mode:
+        entry["api_mode"] = body.api_mode
+    elif "api_mode" in entry:
+        entry.pop("api_mode", None)
     # Same for the model map: merge rather than replace, so existing models
     # keep their context lengths. ``body.models`` is the catalogue the panel's
     # Test button already discovered — without it only the one hand-typed

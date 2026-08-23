@@ -56,6 +56,7 @@ class CustomEndpointUpdate(BaseModel):
     base_url: str
     model: str
     api_key: Optional[str] = None
+    api_mode: Optional[str] = None
     context_length: Optional[int] = None
     discover_models: bool = True
     make_default: bool = False

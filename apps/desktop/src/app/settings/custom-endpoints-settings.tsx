@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   activateCustomEndpoint,
   deleteCustomEndpoint,
@@ -26,6 +27,7 @@ interface CustomEndpointsSettingsProps {
 
 interface EndpointForm {
   apiKey: string
+  apiMode: string
   baseUrl: string
   contextLength: string
   discoverModels: boolean
@@ -37,6 +39,7 @@ interface EndpointForm {
 
 const EMPTY_FORM: EndpointForm = {
   apiKey: '',
+  apiMode: '',
   baseUrl: '',
   contextLength: '',
   discoverModels: true,
@@ -49,6 +52,7 @@ const EMPTY_FORM: EndpointForm = {
 function formFromEndpoint(endpoint: CustomEndpoint): EndpointForm {
   return {
     apiKey: '',
+    apiMode: endpoint.api_mode || '',
     baseUrl: endpoint.base_url,
     contextLength: endpoint.context_length ? String(endpoint.context_length) : '',
     discoverModels: endpoint.discover_models,
@@ -68,6 +72,7 @@ function toPayload(form: EndpointForm, models?: string[]): CustomEndpointUpdate 
     base_url: form.baseUrl.trim(),
     model: form.model.trim(),
     api_key: form.apiKey.trim() || undefined,
+    api_mode: form.apiMode || undefined,
     context_length: Number.isFinite(contextLength) && contextLength > 0 ? contextLength : undefined,
     discover_models: form.discoverModels,
     make_default: form.makeDefault,
@@ -226,6 +231,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
 
   const allModelOptions = Array.from(new Set([...discoveredModels, form.model].filter(Boolean)))
   const canSave = form.name.trim() && form.baseUrl.trim() && form.model.trim()
+  const autoDetectApiMode = '__auto_detect__'
 
   return (
     <SettingsContent>
@@ -322,7 +328,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                 value={form.baseUrl}
               />
             </label>
-            <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_12rem]">
+            <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_12rem_18rem]">
               <label className="grid gap-1.5 text-xs text-muted-foreground">
                 Default Model
                 <Input
@@ -345,6 +351,25 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                   placeholder="Auto"
                   value={form.contextLength}
                 />
+              </label>
+              <label className="grid gap-1.5 text-xs text-muted-foreground">
+                API Mode
+                <Select
+                  onValueChange={value =>
+                    setForm(current => ({ ...current, apiMode: value === autoDetectApiMode ? '' : value }))
+                  }
+                  value={form.apiMode || autoDetectApiMode}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={autoDetectApiMode}>Auto-detect</SelectItem>
+                    <SelectItem value="chat_completions">Chat Completions (/chat/completions)</SelectItem>
+                    <SelectItem value="codex_responses">Responses (/v1/responses)</SelectItem>
+                    <SelectItem value="anthropic_messages">Anthropic Messages (/v1/messages)</SelectItem>
+                  </SelectContent>
+                </Select>
               </label>
             </div>
             <label className="grid gap-1.5 text-xs text-muted-foreground">

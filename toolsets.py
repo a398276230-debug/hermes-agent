@@ -68,6 +68,8 @@ _HERMES_CORE_TOOLS = [
     # off every CLI/messaging/cron schema (narrow waist).
     # Session history search
     "session_search",
+    # Sideria Bridge meme search (local-service gated; hidden when unavailable)
+    "search_memes",
     # Clarifying questions
     "clarify",
     # Code execution + delegation
@@ -254,6 +256,12 @@ TOOLSETS = {
     "session_search": {
         "description": "Search and recall past conversations with summarization",
         "tools": ["session_search"],
+        "includes": []
+    },
+
+    "meme_search": {
+        "description": "Search the local Sideria Bridge meme library",
+        "tools": ["search_memes"],
         "includes": []
     },
 
@@ -485,6 +493,8 @@ TOOLSETS = {
             "todo", "memory",
             # Session history search
             "session_search",
+            # Local Sideria Bridge meme search (service-gated)
+            "search_memes",
             # Code execution + delegation
             "execute_code", "delegate_task",
             # Cronjob management

@@ -91,6 +91,10 @@ def is_native_gemini_base_url(base_url: str) -> bool:
     if not normalized:
         return False
     if "generativelanguage.googleapis.com" not in normalized:
+        # Allow custom endpoints that expose the Gemini native /v1beta API
+        # (e.g. CLIProxyAPI local proxy) — detect by the /v1beta path suffix.
+        if "/v1beta" in normalized:
+            return True
         return False
     return not normalized.endswith("/openai")
 
