@@ -1549,6 +1549,13 @@ class APIServerAdapter(BasePlatformAdapter):
         # Active run agent/task references for stop support
         self._active_run_agents: Dict[str, Any] = {}
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
+        # Live agents for /v1/chat/completions (and session-chat streaming)
+        # keyed by X-Hermes-Session-Id, so chat clients can redirect a
+        # follow-up into the running turn instead of dropping the connection
+        # (which hard-interrupts the agent). Same lifecycle as
+        # _active_run_agents: registered when the agent is created, popped
+        # when the turn returns.
+        self._chat_session_agents: Dict[str, Any] = {}
         # Stop is cooperative: the executor thread may outlive the HTTP request.
         self._stopping_run_ids: set[str] = set()
         # Pollable run status for dashboards and external control-plane UIs.
@@ -2242,6 +2249,8 @@ class APIServerAdapter(BasePlatformAdapter):
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
             ("POST", "/api/sessions/{session_id}/model", self._handle_session_model_lock),
             ("POST", "/v1/chat/completions", self._handle_chat_completions),
+            ("POST", "/v1/chat/redirect", self._handle_chat_redirect),
+            ("POST", "/v1/chat/stop", self._handle_chat_stop),
             ("POST", "/v1/responses", self._handle_responses),
             ("GET", "/v1/responses/{response_id}", self._handle_get_response),
             ("DELETE", "/v1/responses/{response_id}", self._handle_delete_response),
@@ -7262,6 +7271,14 @@ class APIServerAdapter(BasePlatformAdapter):
                         agent_ref[0] = agent
                     if active_run_id:
                         self._active_run_agents[active_run_id] = agent
+                    # Streaming chat surfaces (agent_ref callers) also expose
+                    # the live agent by session_id so POST /v1/chat/redirect
+                    # can fold a follow-up into this turn without the client
+                    # dropping the SSE connection. Identity-guarded removal
+                    # in the finally below keeps a same-session successor
+                    # from being deregistered by its predecessor.
+                    if agent_ref is not None and session_id:
+                        self._chat_session_agents[session_id] = agent
                     effective_task_id = session_id or str(uuid.uuid4())
                     # Baseline for selective background-process reaping on
                     # SSE client disconnect — mirrors gateway/run.py's
@@ -7405,6 +7422,12 @@ class APIServerAdapter(BasePlatformAdapter):
                     # in gateway/run.py's _run_sync_with_timeout_lifecycle.
                     if active_run_id:
                         self._active_run_agents.pop(active_run_id, None)
+                    if (
+                        agent is not None
+                        and session_id
+                        and self._chat_session_agents.get(session_id) is agent
+                    ):
+                        self._chat_session_agents.pop(session_id, None)
                     if agent is not None:
                         _clear_turn_process_ownership(agent)
                         # Symmetric with the registration above: the turn is
@@ -8117,6 +8140,135 @@ class APIServerAdapter(BasePlatformAdapter):
             "run_id": run_id,
             "choice": choice,
             "resolved": resolved,
+        })
+
+    async def _handle_chat_redirect(self, request: "web.Request") -> "web.Response":
+        """POST /v1/chat/redirect — fold a follow-up into a session's live run.
+
+        OpenAI-compatible clients (e.g. chat bridges) drive Hermes through
+        /v1/chat/completions with X-Hermes-Session-Id; their only mid-run
+        lever until now was dropping the SSE connection, which the server
+        treats as a hard interrupt ("Operation interrupted..."). This
+        endpoint exposes the same active-turn redirect the native gateway
+        surfaces use (gateway/run.py busy-input handling): the in-flight
+        provider request is cancelled, the completed turn prefix is kept,
+        the correction lands as a user message, and the run continues.
+        During tool execution agent.redirect() degrades to steer() so no
+        tool is killed just to deliver conversational guidance.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+        if not session_id:
+            return web.json_response(
+                _openai_error(
+                    "Missing X-Hermes-Session-Id header; redirect targets a session's live run.",
+                    code="missing_session",
+                ),
+                status=400,
+            )
+
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        raw_text = body.get("text") or body.get("input") or body.get("message") or ""
+        redirect_text = _normalize_chat_content(raw_text).strip()
+        if not redirect_text:
+            return web.json_response(
+                _openai_error(
+                    "Missing non-empty redirect text; expected 'text', 'input', or 'message'.",
+                    code="invalid_redirect_input",
+                ),
+                status=400,
+            )
+
+        agent = self._chat_session_agents.get(session_id)
+        if agent is None or not hasattr(agent, "redirect"):
+            return web.json_response(
+                _openai_error(
+                    f"No live run for session: {session_id}",
+                    code="no_active_run",
+                ),
+                status=409,
+            )
+
+        try:
+            accepted = bool(agent.redirect(redirect_text))
+        except Exception as exc:
+            logger.exception("[api_server] redirect failed for session %s", session_id)
+            return web.json_response(
+                _openai_error(_redact_api_error_text(exc), code="redirect_failed"),
+                status=500,
+            )
+        if not accepted:
+            # agent.redirect() returns False when there is no live model
+            # request and no executing tool batch (turn finished, or a
+            # prior interrupt is already in flight). Tell the caller so it
+            # can fall back to its next-turn queue instead of assuming the
+            # correction was delivered.
+            return web.json_response(
+                _openai_error(
+                    f"Run did not accept redirect text: {session_id}",
+                    code="redirect_not_accepted",
+                ),
+                status=409,
+            )
+        return web.json_response({
+            "object": "hermes.chat.redirect",
+            "session_id": session_id,
+            "accepted": True,
+        })
+
+    async def _handle_chat_stop(self, request: "web.Request") -> "web.Response":
+        """POST /v1/chat/stop — hard-stop a session's live run.
+
+        Companion to /v1/chat/redirect: once a client folds follow-ups into
+        the running turn, it loses the old "drop the connection to
+        interrupt" lever. This endpoint restores an explicit escape hatch —
+        the live agent gets request_hard_interrupt (cascades to tools and
+        subagents), mirroring /v1/runs/{run_id}/stop semantics for
+        chat-completions sessions. Idempotent: stopping a session with no
+        live run reports nothing to stop.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+        if not session_id:
+            return web.json_response(
+                _openai_error(
+                    "Missing X-Hermes-Session-Id header; stop targets a session's live run.",
+                    code="missing_session",
+                ),
+                status=400,
+            )
+
+        agent = self._chat_session_agents.get(session_id)
+        if agent is None:
+            return web.json_response({
+                "object": "hermes.chat.stop",
+                "session_id": session_id,
+                "stopped": False,
+                "detail": "No live run for this session.",
+            })
+
+        try:
+            request_hard_interrupt(agent, "Stop requested via chat API")
+        except Exception:
+            logger.exception(
+                "[api_server] stop failed for session %s", session_id
+            )
+            return web.json_response(
+                _openai_error("Stop request failed.", code="stop_failed"),
+                status=500,
+            )
+        return web.json_response({
+            "object": "hermes.chat.stop",
+            "session_id": session_id,
+            "stopped": True,
         })
 
     async def _handle_steer_run(self, request: "web.Request") -> "web.Response":

@@ -800,3 +800,184 @@ class TestRunsProviderAuthFailure:
                 assert status["status"] == "failed"
                 assert status["error"] == "⚠️ Provider authentication failed: No credentials found for provider 'nous'"
                 assert status["last_event"] == "run.failed"
+
+
+# ---------------------------------------------------------------------------
+# POST /v1/chat/redirect — fold a follow-up into a session's live run
+# ---------------------------------------------------------------------------
+
+
+class TestChatRedirect:
+    def _create_redirect_app(self, adapter: APIServerAdapter) -> web.Application:
+        app = web.Application()
+        app.router.add_post("/v1/chat/redirect", adapter._handle_chat_redirect)
+        return app
+
+    @pytest.mark.asyncio
+    async def test_redirect_live_session_agent(self, adapter):
+        app = self._create_redirect_app(adapter)
+        agent = MagicMock()
+        agent.redirect.return_value = True
+        adapter._chat_session_agents["qq_group123"] = agent
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/redirect",
+                json={"text": "改一下，先回我这条"},
+                headers={"X-Hermes-Session-Id": "qq_group123"},
+            )
+            payload = await resp.json()
+
+        assert resp.status == 200
+        assert payload == {
+            "object": "hermes.chat.redirect",
+            "session_id": "qq_group123",
+            "accepted": True,
+        }
+        agent.redirect.assert_called_once_with("改一下，先回我这条")
+
+    @pytest.mark.asyncio
+    async def test_redirect_without_session_header_returns_400(self, adapter):
+        app = self._create_redirect_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/chat/redirect", json={"text": "hello"})
+            payload = await resp.json()
+
+        assert resp.status == 400
+        assert payload["error"]["code"] == "missing_session"
+
+    @pytest.mark.asyncio
+    async def test_redirect_empty_text_returns_400(self, adapter):
+        app = self._create_redirect_app(adapter)
+        agent = MagicMock()
+        adapter._chat_session_agents["qq_group123"] = agent
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/redirect",
+                json={"text": "   "},
+                headers={"X-Hermes-Session-Id": "qq_group123"},
+            )
+            payload = await resp.json()
+
+        assert resp.status == 400
+        assert payload["error"]["code"] == "invalid_redirect_input"
+        agent.redirect.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_redirect_no_live_run_returns_409(self, adapter):
+        """No agent for the session: the caller must queue a new turn instead."""
+        app = self._create_redirect_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/redirect",
+                json={"text": "hello"},
+                headers={"X-Hermes-Session-Id": "qq_nobody"},
+            )
+            payload = await resp.json()
+
+        assert resp.status == 409
+        assert payload["error"]["code"] == "no_active_run"
+
+    @pytest.mark.asyncio
+    async def test_redirect_rejected_by_agent_returns_409(self, adapter):
+        """agent.redirect() False (turn finished / prior interrupt): caller falls back."""
+        app = self._create_redirect_app(adapter)
+        agent = MagicMock()
+        agent.redirect.return_value = False
+        adapter._chat_session_agents["qq_group123"] = agent
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/redirect",
+                json={"text": "hello"},
+                headers={"X-Hermes-Session-Id": "qq_group123"},
+            )
+            payload = await resp.json()
+
+        assert resp.status == 409
+        assert payload["error"]["code"] == "redirect_not_accepted"
+        agent.redirect.assert_called_once_with("hello")
+
+    @pytest.mark.asyncio
+    async def test_redirect_requires_auth(self, auth_adapter):
+        app = self._create_redirect_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/redirect",
+                json={"text": "hello"},
+                headers={"X-Hermes-Session-Id": "qq_group123"},
+            )
+
+        assert resp.status == 401
+
+
+# ---------------------------------------------------------------------------
+# POST /v1/chat/stop — hard-stop a session's live run
+# ---------------------------------------------------------------------------
+
+
+class TestChatStop:
+    def _create_stop_app(self, adapter: APIServerAdapter) -> web.Application:
+        app = web.Application()
+        app.router.add_post("/v1/chat/stop", adapter._handle_chat_stop)
+        return app
+
+    @pytest.mark.asyncio
+    async def test_stop_live_session_agent(self, adapter):
+        app = self._create_stop_app(adapter)
+        agent = MagicMock()
+        adapter._chat_session_agents["qq_group123"] = agent
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/stop",
+                json={},
+                headers={"X-Hermes-Session-Id": "qq_group123"},
+            )
+            payload = await resp.json()
+
+        assert resp.status == 200
+        assert payload == {
+            "object": "hermes.chat.stop",
+            "session_id": "qq_group123",
+            "stopped": True,
+        }
+        # request_hard_interrupt must have hit the agent (interrupt cascade).
+        agent.interrupt.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_stop_without_live_run_is_idempotent(self, adapter):
+        app = self._create_stop_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/stop",
+                json={},
+                headers={"X-Hermes-Session-Id": "qq_nobody"},
+            )
+            payload = await resp.json()
+
+        assert resp.status == 200
+        assert payload["stopped"] is False
+
+    @pytest.mark.asyncio
+    async def test_stop_without_session_header_returns_400(self, adapter):
+        app = self._create_stop_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/chat/stop", json={})
+            payload = await resp.json()
+
+        assert resp.status == 400
+        assert payload["error"]["code"] == "missing_session"
+
+    @pytest.mark.asyncio
+    async def test_stop_requires_auth(self, auth_adapter):
+        app = self._create_stop_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/stop",
+                json={},
+                headers={"X-Hermes-Session-Id": "qq_group123"},
+            )
+
+        assert resp.status == 401
