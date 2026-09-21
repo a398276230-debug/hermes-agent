@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useState,
@@ -35,6 +36,12 @@ import {
 import { api } from "@/lib/api";
 import { formatSessionPruneResult } from "@/lib/session-prune";
 import { shouldRefreshSessions } from "@/lib/session-refresh";
+import { toolResultPreview } from "@/lib/tool-result-preview";
+import {
+  SESSION_LIVE_TAIL_INTERVAL_MS,
+  isPinnedToBottom,
+  transcriptSignature,
+} from "@/lib/session-live-tail";
 import {
   importSummary,
   parseImportSessions,
@@ -52,6 +59,8 @@ import { PlatformsCard } from "@/components/PlatformsCard";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
+import { Label } from "@nous-research/ui/ui/components/label";
+import { Switch } from "@nous-research/ui/ui/components/switch";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Segmented } from "@nous-research/ui/ui/components/segmented";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -394,6 +403,23 @@ function MessageBubble({
   const highlightTerms =
     isHit && highlight ? highlight.split(/\s+/).filter(Boolean) : undefined;
 
+  // Tool results are the long tail of a transcript — one read_file or
+  // terminal dump can be hundreds of lines. They render as a collapsed
+  // summary row so a phone reader can scan past them; a search hit expands
+  // automatically because that is the row the reader came for. A row with no
+  // body has nothing to collapse and keeps the plain layout.
+  if (msg.role === "tool" && msg.content) {
+    return (
+      <ToolResultBubble
+        msg={msg}
+        label={label}
+        style={style}
+        isHit={isHit}
+        highlightTerms={highlightTerms}
+      />
+    );
+  }
+
   return (
     <div
       className={`${style.bg} p-3 ${isHit ? "ring-1 ring-warning/40" : ""}`}
@@ -431,15 +457,151 @@ function MessageBubble({
   );
 }
 
-/** Message list with auto-scroll to first search hit. */
+/**
+ * Collapsible tool-result bubble.
+ *
+ * Tool output dwarfs everything around it, which makes scroll-back on a phone
+ * miserable. The header stays visible — tool name, time, line count and a
+ * one-line preview — and the full markdown body mounts only when expanded. A
+ * bubble matching the active search starts expanded, since that is exactly
+ * the content the reader asked to see.
+ */
+function ToolResultBubble({
+  msg,
+  label,
+  style,
+  isHit,
+  highlightTerms,
+}: {
+  msg: SessionMessage;
+  label: string;
+  style: { bg: string; text: string };
+  isHit: boolean;
+  highlightTerms?: string[];
+}) {
+  const { t } = useI18n();
+  const bodyId = useId();
+  // `null` follows the default (expanded while it is a search hit); an
+  // explicit toggle pins the reader's choice for the life of the bubble.
+  const [override, setOverride] = useState<boolean | null>(null);
+  const expanded = override ?? isHit;
+  const content = msg.content ?? "";
+  const { lines, preview } = toolResultPreview(content);
+
+  return (
+    <div
+      className={`${style.bg} p-3 ${isHit ? "ring-1 ring-warning/40" : ""}`}
+      data-search-hit={isHit || undefined}
+    >
+      {/* The whole header is the toggle: on touch there is no hover state to
+          reveal a small chevron, so the target spans the full row (min-h-11
+          keeps it at the 44px comfortable-tap minimum). */}
+      <button
+        type="button"
+        onClick={() => setOverride(!expanded)}
+        aria-expanded={expanded}
+        aria-controls={bodyId}
+        className="flex w-full min-h-11 items-start gap-2 text-left"
+      >
+        <span className={`mt-0.5 shrink-0 ${style.text}`} aria-hidden="true">
+          {expanded ? (
+            <ChevronDown className="h-4 w-4" />
+          ) : (
+            <ChevronRight className="h-4 w-4" />
+          )}
+        </span>
+        <span className="flex min-w-0 flex-1 flex-col gap-1">
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+            <span className={`text-xs font-semibold ${style.text}`}>
+              {label}
+            </span>
+            {isHit && (
+              <Badge tone="warning" className="text-xs py-0 px-1.5">
+                {t.common.match}
+              </Badge>
+            )}
+            {msg.timestamp && (
+              <span className="text-xs text-text-tertiary">
+                {timeAgo(msg.timestamp)}
+              </span>
+            )}
+            {lines > 1 && (
+              <span className="text-xs text-text-tertiary">
+                {t.sessions.toolResultLines.replace("{count}", String(lines))}
+              </span>
+            )}
+          </span>
+          {!expanded && preview && (
+            <span className="block truncate font-mono text-xs text-foreground/70">
+              {preview}
+            </span>
+          )}
+          <span className="sr-only">
+            {expanded ? t.common.collapse : t.common.expand}
+          </span>
+        </span>
+      </button>
+      {expanded && content && (
+        <div id={bodyId} className="mt-2">
+          <Markdown content={content} highlightTerms={highlightTerms} />
+        </div>
+      )}
+      {msg.tool_calls && msg.tool_calls.length > 0 && (
+        <div className="mt-1">
+          {msg.tool_calls.map((tc) => (
+            <ToolCallBlock key={tc.id} toolCall={tc} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Message list with auto-scroll to first search hit, and optional
+ * follow-the-bottom behaviour for the live tail.
+ */
 function MessageList({
   messages,
   highlight,
+  follow = false,
 }: {
   messages: SessionMessage[];
   highlight?: string;
+  follow?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  // Tracks whether the viewport is at the bottom BEFORE new rows render, so
+  // appending messages only scrolls when the reader was already following
+  // along (and never yanks someone reading history back down).
+  const pinnedRef = useRef(true);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      pinnedRef.current = isPinnedToBottom(el);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+    };
+  }, []);
+
+  // A search highlight owns the scroll position while it is active, so the
+  // live tail stands down rather than fighting the "jump to first hit".
+  const followBottom = follow && !highlight;
+  const followingRef = useRef(false);
+  useEffect(() => {
+    const el = containerRef.current;
+    const justEnabled = followBottom && !followingRef.current;
+    followingRef.current = followBottom;
+    if (!el || !followBottom) return;
+    if (justEnabled || pinnedRef.current) {
+      el.scrollTop = el.scrollHeight;
+      pinnedRef.current = true;
+    }
+  }, [followBottom, messages]);
 
   useEffect(() => {
     if (!highlight || !containerRef.current) return;
@@ -477,14 +639,31 @@ function SessionRow({
   onRename,
   onExport,
   resumeInChatEnabled,
+  liveTailEnabled,
+  onToggleLiveTail,
+  onLiveChange,
 }: SessionRowProps) {
   const [messages, setMessages] = useState<SessionMessage[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [liveError, setLiveError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(session.title ?? "");
   const [renameSaving, setRenameSaving] = useState(false);
   const { t } = useI18n();
   const navigate = useNavigate();
+  // Stamp of the transcript currently on screen, so a poll that returns the
+  // same content leaves state — and the reader's scroll position — untouched.
+  const transcriptStampRef = useRef<string | null>(null);
+
+  // Apply a freshly fetched transcript. Returns whether anything changed, so
+  // a live poll can skip the row-metadata refresh when the agent is idle.
+  const applyTranscript = useCallback((next: SessionMessage[]) => {
+    const stamp = transcriptSignature(next);
+    if (stamp === transcriptStampRef.current) return false;
+    transcriptStampRef.current = stamp;
+    setMessages(next);
+    return true;
+  }, []);
 
   useEffect(() => {
     if (!isExpanded || messages !== null) return;
@@ -492,7 +671,7 @@ function SessionRow({
     api
       .getSessionMessages(session.id, session.profile)
       .then((resp) => {
-        if (!cancelled) setMessages(resp.messages);
+        if (!cancelled) applyTranscript(resp.messages);
       })
       .catch((err) => {
         if (!cancelled) setError(errorMessage(err));
@@ -500,8 +679,65 @@ function SessionRow({
     return () => {
       cancelled = true;
     };
-  }, [isExpanded, session.id, session.profile, messages]);
+  }, [applyTranscript, isExpanded, session.id, session.profile, messages]);
 
+  // Live tail: strictly read-only re-reads of the transcript while the row is
+  // expanded and the user has switched auto-refresh on. ``getSessionMessages``
+  // is a GET that opens the session DB read-only on the server, so polling
+  // never writes to the store and never contends for the agent's write lock.
+  useEffect(() => {
+    if (!isExpanded || !liveTailEnabled) return;
+    let cancelled = false;
+    let inFlight = false;
+    const poll = () => {
+      // Skip a tick if the previous read is still outstanding — a slow or
+      // hung store must not stack requests.
+      if (inFlight) return;
+      inFlight = true;
+      api
+        .getSessionMessages(session.id, session.profile)
+        .then((resp) => {
+          if (cancelled) return;
+          setLiveError(null);
+          // A successful poll also heals a failed initial expand read.
+          setError(null);
+          if (applyTranscript(resp.messages)) onLiveChange();
+        })
+        .catch((err) => {
+          // Keep the transcript we already have: a transient read failure
+          // must not blank a page the user is monitoring.
+          if (!cancelled) setLiveError(errorMessage(err));
+        })
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+    const id = setInterval(poll, SESSION_LIVE_TAIL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [
+    applyTranscript,
+    isExpanded,
+    liveTailEnabled,
+    onLiveChange,
+    session.id,
+    session.profile,
+  ]);
+
+  // Toggling clears the last poll failure so a stale badge cannot outlive
+  // the run that produced it (an effect here would trip the
+  // react-hooks/set-state-in-effect lint trap).
+  const toggleLiveTail = useCallback(
+    (next: boolean) => {
+      setLiveError(null);
+      onToggleLiveTail(next);
+    },
+    [onToggleLiveTail],
+  );
+
+  const liveTailId = `sessions-live-tail-${session.id}`;
   const sourceKey = session.source?.split(":")[0];
   const sourceInfo = (session.source
     ? SOURCE_CONFIG[session.source] ?? (sourceKey ? SOURCE_CONFIG[sourceKey] : null)
@@ -741,6 +977,27 @@ function SessionRow({
 
       {isExpanded && (
         <div className="min-w-0 border-t border-border bg-background/50 p-4">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <Switch
+              id={liveTailId}
+              checked={liveTailEnabled}
+              onCheckedChange={toggleLiveTail}
+            />
+            <Label htmlFor={liveTailId} className="cursor-pointer text-xs">
+              {t.sessions.liveTail}
+            </Label>
+            {liveTailEnabled && (
+              <Badge tone="success" className="text-xs">
+                <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
+                {t.common.live}
+              </Badge>
+            )}
+            {liveTailEnabled && liveError && (
+              <span className="text-xs text-destructive">
+                {t.sessions.liveTailFailed}
+              </span>
+            )}
+          </div>
           {messages === null && !error && (
             <div className="flex items-center justify-center py-8">
               <Spinner className="text-xl text-primary" />
@@ -755,7 +1012,11 @@ function SessionRow({
             </p>
           )}
           {messages && messages.length > 0 && (
-            <MessageList messages={messages} highlight={searchQuery} />
+            <MessageList
+              messages={messages}
+              highlight={searchQuery}
+              follow={liveTailEnabled}
+            />
           )}
         </div>
       )}
@@ -822,6 +1083,10 @@ export default function SessionsPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // One switch for the whole page: only one row can be expanded at a time,
+  // and a user monitoring a conversation wants it to stay on as they move
+  // between rows. Default off — polling is opt-in.
+  const [liveTail, setLiveTail] = useState(false);
   const [searchResults, setSearchResults] = useState<
     SessionSearchResult[] | null
   >(null);
@@ -1118,6 +1383,14 @@ export default function SessionsPage() {
   useEffect(() => {
     pageRef.current = page;
   }, [page]);
+
+  // A live-tail poll that brought in new messages also aged the row's own
+  // counters (message_count / tool_call_count / is_active), which only the
+  // list response carries. Reload the visible page silently — same shape as
+  // the overview poll's refresh, so no spinner and no scroll jump.
+  const refreshListSilently = useCallback(() => {
+    loadSessions(pageRef.current, true);
+  }, [loadSessions]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2114,6 +2387,9 @@ export default function SessionsPage() {
                   onRename={handleRename}
                   onExport={handleExport}
                   resumeInChatEnabled={resumeInChatEnabled}
+                  liveTailEnabled={liveTail}
+                  onToggleLiveTail={setLiveTail}
+                  onLiveChange={refreshListSilently}
                 />
               ))}
             </div>
@@ -2203,6 +2479,11 @@ export default function SessionsPage() {
 interface SessionRowProps {
   isExpanded: boolean;
   isSelected: boolean;
+  /** Auto-refresh the expanded transcript from the read-only sessions API. */
+  liveTailEnabled: boolean;
+  onToggleLiveTail: (enabled: boolean) => void;
+  /** The transcript changed during a live poll (row counters are stale). */
+  onLiveChange: () => void;
   onDelete: () => void;
   onExport: (id: string) => void;
   onRename: (id: string, title: string) => Promise<void>;

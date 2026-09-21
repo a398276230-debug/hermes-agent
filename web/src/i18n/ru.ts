@@ -164,9 +164,12 @@ export const ru: Translations = {
     selectedSessionsDeleted: "Удалено сессий: {count}",
     failedToDeleteSelected: "Не удалось удалить выбранные сессии",
     resumeInChat: "Продолжить в чате",
+    liveTail: "Автообновление",
+    liveTailFailed: "Не удалось выполнить автообновление",
     newChat: "Новый чат",
     previousPage: "Предыдущая страница",
     nextPage: "Следующая страница",
+    toolResultLines: "{count} строк",
     roles: {
       user: "Пользователь",
       assistant: "Ассистент",

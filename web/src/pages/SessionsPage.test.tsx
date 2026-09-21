@@ -185,3 +185,209 @@ describe("SessionsPage per-row profile routing (#99387)", () => {
     expect(apiMocks.deleteSession).toHaveBeenCalledWith("sid-worker", "worker");
   });
 });
+
+// Auto-refresh is a monitor: it re-reads the transcript while the agent
+// writes it in another process, and MUST NOT write to the session store.
+describe("SessionsPage expanded-row live tail", () => {
+  const liveRow = {
+    id: "sid-live",
+    profile: "default",
+    source: "cli",
+    model: null,
+    title: "Monitored",
+    started_at: 1,
+    ended_at: null,
+    last_active: 1,
+    is_active: true,
+    message_count: 1,
+    tool_call_count: 0,
+    input_tokens: 1,
+    output_tokens: 1,
+    preview: "hi",
+  };
+  const firstMessage = { role: "system", content: "first line", timestamp: 1 };
+  const secondMessage = { role: "system", content: "second line", timestamp: 2 };
+  const liveToggle = () => document.getElementById("sessions-live-tail-sid-live");
+
+  it("re-reads the transcript on a timer, shows new messages, and writes nothing", async () => {
+    // Fake-but-auto-advancing timers keep waitFor's real-time polling alive
+    // while advanceTimersByTime drives the 3s cadence deterministically.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      apiMocks.getSessionMessages.mockResolvedValueOnce({
+        messages: [firstMessage],
+      });
+      apiMocks.getSessionMessages.mockResolvedValue({
+        messages: [firstMessage, secondMessage],
+      });
+      await renderSessionsPage([liveRow]);
+
+      await act(async () => click(button("Delete session")!.closest("div.cursor-pointer")));
+      await waitFor(() => apiMocks.getSessionMessages.mock.calls.length >= 1);
+
+      // Off until asked for.
+      expect(liveToggle()?.getAttribute("aria-checked")).toBe("false");
+      const beforeToggle = apiMocks.getSessionMessages.mock.calls.length;
+
+      await act(async () => click(liveToggle()));
+      expect(liveToggle()?.getAttribute("aria-checked")).toBe("true");
+
+      await act(async () => {
+        vi.advanceTimersByTime(3000);
+      });
+      await waitFor(() => apiMocks.getSessionMessages.mock.calls.length > beforeToggle);
+      // The poll follows the row's own profile, exactly like the expand read.
+      expect(apiMocks.getSessionMessages).toHaveBeenLastCalledWith("sid-live", "default");
+      await waitFor(() => document.body.textContent?.includes("second line") === true);
+
+      // Read-only: polling must not reach for any mutating endpoint.
+      expect(apiMocks.renameSession).not.toHaveBeenCalled();
+      expect(apiMocks.deleteSession).not.toHaveBeenCalled();
+      expect(apiMocks.bulkDeleteSessions).not.toHaveBeenCalled();
+      expect(apiMocks.deleteEmptySessions).not.toHaveBeenCalled();
+      expect(apiMocks.pruneSessions).not.toHaveBeenCalled();
+      expect(apiMocks.importSessions).not.toHaveBeenCalled();
+
+      // Switching off stops the cadence.
+      await act(async () => click(liveToggle()));
+      expect(liveToggle()?.getAttribute("aria-checked")).toBe("false");
+      const afterDisable = apiMocks.getSessionMessages.mock.calls.length;
+      await act(async () => {
+        vi.advanceTimersByTime(15000);
+      });
+      expect(apiMocks.getSessionMessages.mock.calls.length).toBe(afterDisable);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops the cadence when the row is collapsed", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      await renderSessionsPage([liveRow]);
+      const header = () => button("Delete session")!.closest("div.cursor-pointer");
+      await act(async () => click(header()));
+      await waitFor(() => apiMocks.getSessionMessages.mock.calls.length >= 1);
+
+      await act(async () => click(liveToggle()));
+      await act(async () => {
+        vi.advanceTimersByTime(3000);
+      });
+      await waitFor(() => apiMocks.getSessionMessages.mock.calls.length >= 2);
+
+      await act(async () => click(header()));
+      await waitFor(() => liveToggle() === null);
+      const afterCollapse = apiMocks.getSessionMessages.mock.calls.length;
+      await act(async () => {
+        vi.advanceTimersByTime(15000);
+      });
+      expect(apiMocks.getSessionMessages.mock.calls.length).toBe(afterCollapse);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// Tool results (read_file, terminal dumps) are the long rows on a phone, so
+// they render as a collapsed summary and mount the full body only on demand.
+describe("SessionsPage collapsible tool results", () => {
+  const toolRow = {
+    id: "sid-tools",
+    profile: "default",
+    source: "cli",
+    model: null,
+    title: "Tool heavy",
+    started_at: 1,
+    ended_at: null,
+    last_active: 1,
+    is_active: false,
+    message_count: 1,
+    tool_call_count: 1,
+    input_tokens: 1,
+    output_tokens: 1,
+    preview: "read_file",
+  };
+  const toolMessage = {
+    role: "tool",
+    tool_name: "read_file",
+    content: "first line of the file\nsecond line\nthird line",
+    timestamp: 5,
+  };
+
+  // The whole bubble header is the toggle, so find it through the visible
+  // tool label rather than a positional selector.
+  const toolToggle = () => {
+    const label = Array.from(document.querySelectorAll("button span")).find(
+      (el) => el.textContent === "Tool: read_file",
+    );
+    return (label?.closest("button") ?? null) as HTMLButtonElement | null;
+  };
+
+  async function expandRow() {
+    await renderSessionsPage([toolRow]);
+    await expandAgain();
+  }
+
+  // When FTS is active the list is fed by search results, so the row is
+  // re-rendered with the search term as its highlight — the header click is
+  // the same gesture either way.
+  async function expandAgain() {
+    await act(async () =>
+      click(button("Delete session")!.closest("div.cursor-pointer")),
+    );
+  }
+
+  it("collapses by default and mounts the full body only once expanded", async () => {
+    apiMocks.getSessionMessages.mockResolvedValue({ messages: [toolMessage] });
+    await expandRow();
+    await waitFor(() => toolToggle() !== null);
+
+    const collapsed = toolToggle()!;
+    expect(collapsed.getAttribute("aria-expanded")).toBe("false");
+    // The summary shows the tool name, a one-line preview and the line count…
+    expect(collapsed.textContent).toContain("Tool: read_file");
+    expect(collapsed.textContent).toContain("first line of the file");
+    expect(collapsed.textContent).toContain("3 lines");
+    // …and the body is not in the DOM at all while collapsed.
+    const bodyId = collapsed.getAttribute("aria-controls")!;
+    expect(document.getElementById(bodyId)).toBeNull();
+
+    await act(async () => click(collapsed));
+    const expanded = toolToggle()!;
+    expect(expanded.getAttribute("aria-expanded")).toBe("true");
+    expect(document.getElementById(expanded.getAttribute("aria-controls")!)).not.toBeNull();
+    // The preview is replaced by the body, not shown alongside it.
+    expect(expanded.textContent).not.toContain("first line of the file");
+
+    await act(async () => click(toolToggle()));
+    expect(toolToggle()!.getAttribute("aria-expanded")).toBe("false");
+    expect(document.getElementById(bodyId)).toBeNull();
+  });
+
+  it("auto-expands a tool result that matches the active search", async () => {
+    apiMocks.getSessionMessages.mockResolvedValue({
+      messages: [
+        { ...toolMessage, content: "needle in the haystack\nmore output" },
+      ],
+    });
+    apiMocks.searchSessions.mockResolvedValue({ results: [toolRow] });
+    await renderSessionsPage([toolRow]);
+
+    const search = document.querySelector<HTMLInputElement>("input[placeholder]");
+    if (!search) throw new Error("search input not rendered");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+        search,
+        "needle",
+      );
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await waitFor(() => apiMocks.searchSessions.mock.calls.length > 0);
+
+    await expandAgain();
+    await waitFor(() => toolToggle() !== null);
+
+    // The search hit is the row the reader asked for, so it starts open.
+    expect(toolToggle()!.getAttribute("aria-expanded")).toBe("true");
+  });
+});

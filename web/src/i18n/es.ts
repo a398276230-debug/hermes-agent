@@ -164,9 +164,12 @@ export const es: Translations = {
     selectedSessionsDeleted: "{count} sesiones eliminadas",
     failedToDeleteSelected: "No se pudieron eliminar las sesiones seleccionadas",
     resumeInChat: "Reanudar en el chat",
+    liveTail: "Actualización automática",
+    liveTailFailed: "Error en la actualización automática",
     newChat: "Nuevo chat",
     previousPage: "Página anterior",
     nextPage: "Página siguiente",
+    toolResultLines: "{count} líneas",
     roles: {
       user: "Usuario",
       assistant: "Asistente",

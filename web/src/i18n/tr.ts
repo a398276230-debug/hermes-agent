@@ -164,9 +164,12 @@ export const tr: Translations = {
     selectedSessionsDeleted: "{count} oturum silindi",
     failedToDeleteSelected: "Seçilen oturumlar silinemedi",
     resumeInChat: "Sohbette Devam Et",
+    liveTail: "Otomatik yenile",
+    liveTailFailed: "Otomatik yenileme başarısız",
     newChat: "Yeni sohbet",
     previousPage: "Önceki sayfa",
     nextPage: "Sonraki sayfa",
+    toolResultLines: "{count} satır",
     roles: {
       user: "Kullanıcı",
       assistant: "Asistan",

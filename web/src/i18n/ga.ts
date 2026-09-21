@@ -164,9 +164,12 @@ export const ga: Translations = {
     selectedSessionsDeleted: "Scriosadh {count} seisiún",
     failedToDeleteSelected: "Theip ar scriosadh na seisiún roghnaithe",
     resumeInChat: "Lean ar aghaidh sa chomhrá",
+    liveTail: "Uath-athnuachan",
+    liveTailFailed: "Theip ar an uath-athnuachan",
     newChat: "Comhrá nua",
     previousPage: "Leathanach roimhe seo",
     nextPage: "An chéad leathanach eile",
+    toolResultLines: "{count} líne",
     roles: {
       user: "Úsáideoir",
       assistant: "Cúntóir",

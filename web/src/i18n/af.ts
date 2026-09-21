@@ -164,9 +164,12 @@ export const af: Translations = {
     selectedSessionsDeleted: "{count} sessies geskrap",
     failedToDeleteSelected: "Kon nie gekose sessies skrap nie",
     resumeInChat: "Hervat in Klets",
+    liveTail: "Outomatiese herlaai",
+    liveTailFailed: "Outomatiese herlaai het misluk",
     newChat: "Nuwe klets",
     previousPage: "Vorige bladsy",
     nextPage: "Volgende bladsy",
+    toolResultLines: "{count} reëls",
     roles: {
       user: "Gebruiker",
       assistant: "Assistent",

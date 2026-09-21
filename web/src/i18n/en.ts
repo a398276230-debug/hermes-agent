@@ -193,9 +193,12 @@ export const en: Translations = {
     selectedSessionsDeleted: "{count} sessions deleted",
     failedToDeleteSelected: "Failed to delete selected sessions",
     resumeInChat: "Resume in Chat",
+    liveTail: "Auto-refresh",
+    liveTailFailed: "Auto-refresh failed",
     newChat: "New chat",
     previousPage: "Previous page",
     nextPage: "Next page",
+    toolResultLines: "{count} lines",
     roles: {
       user: "User",
       assistant: "Assistant",

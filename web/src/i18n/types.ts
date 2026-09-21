@@ -207,6 +207,11 @@ export interface Translations {
     selectedSessionsDeleted: string;
     failedToDeleteSelected: string;
     resumeInChat: string;
+    /** Expanded-row switch: re-read the transcript on a timer (read-only). */
+    liveTail: string;
+    liveTailFailed: string;
+    /** Collapsed tool-result header: "{count} lines" summary chip. */
+    toolResultLines: string;
     newChat: string;
     previousPage: string;
     nextPage: string;

@@ -162,9 +162,12 @@ export const zh: Translations = {
     selectedSessionsDeleted: "已删除 {count} 个会话",
     failedToDeleteSelected: "删除所选会话失败",
     resumeInChat: "在对话中继续",
+    liveTail: "自动刷新",
+    liveTailFailed: "自动刷新失败",
     newChat: "新对话",
     previousPage: "上一页",
     nextPage: "下一页",
+    toolResultLines: "{count} 行",
     roles: {
       user: "用户",
       assistant: "助手",

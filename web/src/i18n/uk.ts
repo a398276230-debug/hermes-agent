@@ -164,9 +164,12 @@ export const uk: Translations = {
     selectedSessionsDeleted: "Видалено сесій: {count}",
     failedToDeleteSelected: "Не вдалося видалити вибрані сесії",
     resumeInChat: "Продовжити в чаті",
+    liveTail: "Автооновлення",
+    liveTailFailed: "Не вдалося виконати автооновлення",
     newChat: "Новий чат",
     previousPage: "Попередня сторінка",
     nextPage: "Наступна сторінка",
+    toolResultLines: "{count} рядків",
     roles: {
       user: "Користувач",
       assistant: "Асистент",
