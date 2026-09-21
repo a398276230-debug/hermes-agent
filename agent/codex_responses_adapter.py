@@ -676,9 +676,14 @@ def classify_responses_route(agent: Any) -> ResponsesRouteFlags:
     lower = str(getattr(agent, "_base_url_lower", "") or base_url).lower()
     def _host_is(domain: str) -> bool:
         return hostname == domain or hostname.endswith("." + domain)
+    is_xai_provider = (
+        provider in {"xai", "xai-oauth", "custom:xai"}
+        or str(provider).startswith("custom:xai")
+        or (isinstance(provider, str) and "grok" in provider.lower())
+    )
     return ResponsesRouteFlags(
         is_codex_backend=provider == "openai-codex" or (_host_is("chatgpt.com") and "/backend-api/codex" in lower),
-        is_xai_responses=provider in {"xai", "xai-oauth"} or hostname == "api.x.ai",
+        is_xai_responses=is_xai_provider or hostname == "api.x.ai",
         is_github_responses=_host_is("models.github.ai") or _host_is("githubcopilot.com"),
     )
 
