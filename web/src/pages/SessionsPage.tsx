@@ -1085,7 +1085,14 @@ export default function SessionsPage() {
   }
 
   return (
-    <div className="flex min-h-0 min-w-0 w-full max-w-full flex-1 flex-col gap-4">
+    /* The page is viewport-locked (`App.tsx` gives this route an `flex-1
+       min-h-0` outlet, like chat/docs) so the master-detail row owns a
+       definite height: the transcript scrolls inside its own viewport and the
+       session rail next to it never scrolls out of reach. The page-level
+       `overflow-y-auto` is the escape hatch for a short viewport where the
+       chrome above the row (stats, alerts, toolbar) would leave the row less
+       than `min-h` — then the page scrolls instead of clipping. */
+    <div className="flex min-h-0 min-w-0 w-full max-w-full flex-1 flex-col gap-4 overflow-x-hidden overflow-y-auto">
       <PluginSlot name="sessions:top" />
       <Toast toast={toast} />
       <input
@@ -1475,8 +1482,12 @@ export default function SessionsPage() {
         <>
           {/* Master-detail. Below lg the main pane owns the screen and the list
               moves into the drawer; from lg up both panes sit side by side with
-              the list as a fixed right-hand rail. */}
-          <div className="flex min-h-[60dvh] w-full min-w-0 flex-col gap-3 lg:min-h-0 lg:flex-1 lg:flex-row lg:gap-4">
+              the list as a fixed right-hand rail. Either way the row is a
+              bounded viewport (`flex-1 min-h-0`): each pane scrolls inside
+              itself, and the transcript header + quick-jump bar stay put.
+              `min-h-[18rem]` keeps the pane usable when the chrome above is
+              tall; the page scrolls rather than collapsing it. */}
+          <div className="flex min-h-[18rem] w-full min-w-0 flex-1 flex-col gap-3 lg:min-h-0 lg:flex-row lg:gap-4">
             {selectedSession ? (
               <SessionTranscriptPane
                 key={selectedSession.id}

@@ -212,6 +212,12 @@ export interface Translations {
     liveTailFailed: string;
     /** Label for the session-list pane, and for the mobile drawer that opens it. */
     sessionList: string;
+    /** Floating transcript control: jump the message viewport back to the top. */
+    scrollToTop: string;
+    /** Floating transcript control: jump the message viewport to the newest turn. */
+    scrollToBottom: string;
+    /** Floating transcript control (below lg): open the session-list drawer. */
+    switchSession: string;
     /** Accessible name for the transcript region in the main pane. */
     transcript: string;
     /** Main-pane empty state shown while no session is selected. */

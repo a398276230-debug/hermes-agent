@@ -9,7 +9,7 @@
  * refactor from re-growing the page file, and lets the pane render a transcript
  * for a session row without dragging the whole list along.
  */
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type RefObject } from "react";
 
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
@@ -385,20 +385,28 @@ export function MessageList({
   highlight,
   follow = false,
   className,
+  containerRef,
 }: {
   messages: SessionMessage[];
   highlight?: string;
   follow?: boolean;
   className?: string;
+  /**
+   * The scrolling viewport element. The pane passes its own ref so the
+   * floating quick-jump buttons drive the very element these effects follow;
+   * a local ref stands in when nobody needs to reach in from outside.
+   */
+  containerRef?: RefObject<HTMLDivElement | null>;
 }) {
-  const containerRef = useRef<HTMLDivElement>(null);
+  const ownRef = useRef<HTMLDivElement>(null);
+  const viewportRef = containerRef ?? ownRef;
   // Tracks whether the viewport is at the bottom BEFORE new rows render, so
   // appending messages only scrolls when the reader was already following
   // along (and never yanks someone reading history back down).
   const pinnedRef = useRef(true);
 
   useEffect(() => {
-    const el = containerRef.current;
+    const el = viewportRef.current;
     if (!el) return;
     const onScroll = () => {
       pinnedRef.current = isPinnedToBottom(el);
@@ -407,7 +415,7 @@ export function MessageList({
     return () => {
       el.removeEventListener("scroll", onScroll);
     };
-  }, []);
+  }, [viewportRef]);
 
   // A search highlight owns the scroll position while it is active, so the
   // live tail stands down rather than fighting the "jump to first hit".
@@ -420,15 +428,15 @@ export function MessageList({
   // governed by `followBottom` so history readers are never yanked down.
   const initialScrollRef = useRef(false);
   useEffect(() => {
-    const el = containerRef.current;
+    const el = viewportRef.current;
     if (!el || initialScrollRef.current || highlight) return;
     initialScrollRef.current = true;
     el.scrollTop = el.scrollHeight;
     pinnedRef.current = true;
-  }, [highlight, messages]);
+  }, [highlight, messages, viewportRef]);
 
   useEffect(() => {
-    const el = containerRef.current;
+    const el = viewportRef.current;
     const justEnabled = followBottom && !followingRef.current;
     followingRef.current = followBottom;
     if (!el || !followBottom) return;
@@ -436,23 +444,24 @@ export function MessageList({
       el.scrollTop = el.scrollHeight;
       pinnedRef.current = true;
     }
-  }, [followBottom, messages]);
+  }, [followBottom, messages, viewportRef]);
 
   useEffect(() => {
-    if (!highlight || !containerRef.current) return;
+    if (!highlight || !viewportRef.current) return;
     // Scroll to first hit after render
     const timer = setTimeout(() => {
-      const hit = containerRef.current?.querySelector("[data-search-hit]");
+      const hit = viewportRef.current?.querySelector("[data-search-hit]");
       if (hit) {
         hit.scrollIntoView({ behavior: "smooth", block: "center" });
       }
     }, 50);
     return () => clearTimeout(timer);
-  }, [messages, highlight]);
+  }, [messages, highlight, viewportRef]);
 
   return (
     <div
-      ref={containerRef}
+      ref={viewportRef}
+      data-testid="session-transcript-viewport"
       className={cn(
         "flex min-h-0 flex-col gap-3 overflow-y-auto pr-2",
         className,

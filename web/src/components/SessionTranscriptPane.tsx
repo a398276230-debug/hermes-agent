@@ -13,9 +13,22 @@
  *
  * The parent keys this by session id, so switching sessions resets the
  * transcript, the error state and the poll cadence in one step.
+ *
+ * Layout: the pane is a bounded box (`flex-1 min-h-0` inside the page's
+ * viewport-locked master-detail row). Its header is pinned chrome and the
+ * message viewport is the only thing that scrolls, so a 500-row transcript
+ * can never push the header — or the session rail beside it — off screen.
+ * The floating bar in the corner is the way back to either end of it.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, ListFilter, RefreshCw } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowDownToLine,
+  ArrowUpToLine,
+  ListFilter,
+  MessagesSquare,
+  RefreshCw,
+} from "lucide-react";
 
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -64,6 +77,16 @@ export function SessionTranscriptPane({
   const [messages, setMessages] = useState<SessionMessage[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [liveError, setLiveError] = useState<string | null>(null);
+  // The scrolling transcript viewport, owned here so the floating quick-jump
+  // buttons drive the same element `MessageList` follows.
+  const transcriptRef = useRef<HTMLDivElement>(null);
+  /** Jump the transcript viewport to one of its edges (instant, not smooth:
+   * this is a "get me out of 500 lines of tool output" key, not a flourish). */
+  const jumpTranscript = useCallback((edge: "top" | "bottom") => {
+    const el = transcriptRef.current;
+    if (!el) return;
+    el.scrollTop = edge === "top" ? 0 : el.scrollHeight;
+  }, []);
   // Stamp of the transcript currently on screen, so a poll that returns the
   // same content leaves state — and the reader's scroll position — untouched.
   const transcriptStampRef = useRef<string | null>(null);
@@ -165,34 +188,20 @@ export function SessionTranscriptPane({
   return (
     <section
       className={cn(
-        "flex min-h-0 min-w-0 flex-1 flex-col border border-border bg-background-base/40",
+        // `overflow-hidden` stops the transcript viewport's (enormous)
+        // scrollable-overflow region from leaking up through the pane's
+        // visible-overflow ancestors and making the page scrollable behind the
+        // pinned header. The message viewport is the only thing that scrolls.
+        "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border border-border bg-background-base/40",
         className,
       )}
       aria-label={t.sessions.transcript}
     >
-      <header className="flex min-w-0 shrink-0 flex-col gap-2 border-b border-border px-3 py-2">
-        <div className="flex min-w-0 items-start gap-2">
-          {/* Mobile: the session list lives in a drawer, so the main pane
-              needs its own way in. Hidden from lg up, where the list sidebar
-              is permanently on screen. */}
-          {onOpenList && (
-            <Button
-              outlined
-              size="sm"
-              className="shrink-0 lg:hidden"
-              onClick={onOpenList}
-              aria-label={t.sessions.sessionList}
-              aria-controls="sessions-list-panel"
-              aria-expanded={listOpen}
-              aria-haspopup="dialog"
-              prefix={<ListFilter />}
-            >
-              <span className="font-mondwest normal-case text-xs">
-                {t.sessions.sessionList}
-              </span>
-            </Button>
-          )}
-
+      {/* Pinned chrome: inside the viewport-locked pane the header can never
+          scroll away in the first place; `sticky` keeps it reachable if the
+          page does scroll (short viewport, taller page chrome above). */}
+      <header className="sticky top-0 z-20 flex min-w-0 shrink-0 flex-col gap-2 border-b border-border bg-background-base/95 px-3 py-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
           <div className="flex min-w-0 flex-1 flex-col gap-1">
             <div className="flex min-w-0 items-center gap-2">
               <span
@@ -241,21 +250,49 @@ export function SessionTranscriptPane({
             </div>
           </div>
 
-          <div className="flex shrink-0 flex-wrap items-center gap-2">
-            <Switch
-              id={liveTailId}
-              checked={liveTailEnabled}
-              onCheckedChange={toggleLiveTail}
-            />
-            <Label htmlFor={liveTailId} className="cursor-pointer text-xs">
-              {t.sessions.liveTail}
-            </Label>
-            {liveTailEnabled && (
-              <Badge tone="success" className="text-xs">
-                <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
-                {t.common.live}
-              </Badge>
+          {/* Phone: the list button and the auto-refresh switch share a second
+              row under the (now full-width) title block, so a pinned header
+              costs the transcript as few rows as possible. From lg up
+              `contents` dissolves this wrapper, leaving the switch inline next
+              to the title exactly as before. */}
+          <div className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5 lg:contents">
+            {/* Mobile: the session list lives in a drawer, so the main pane
+                needs its own way in. Hidden from lg up, where the list sidebar
+                is permanently on screen. */}
+            {onOpenList && (
+              <Button
+                outlined
+                size="sm"
+                className="shrink-0 lg:hidden"
+                onClick={onOpenList}
+                aria-label={t.sessions.sessionList}
+                aria-controls="sessions-list-panel"
+                aria-expanded={listOpen}
+                aria-haspopup="dialog"
+                prefix={<ListFilter />}
+              >
+                <span className="font-mondwest normal-case text-xs">
+                  {t.sessions.sessionList}
+                </span>
+              </Button>
             )}
+
+            <div className="ml-auto flex min-w-0 flex-wrap items-center gap-2">
+              <Switch
+                id={liveTailId}
+                checked={liveTailEnabled}
+                onCheckedChange={toggleLiveTail}
+              />
+              <Label htmlFor={liveTailId} className="cursor-pointer text-xs">
+                {t.sessions.liveTail}
+              </Label>
+              {liveTailEnabled && (
+                <Badge tone="success" className="text-xs">
+                  <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
+                  {t.common.live}
+                </Badge>
+              )}
+            </div>
           </div>
         </div>
 
@@ -297,12 +334,57 @@ export function SessionTranscriptPane({
         </p>
       )}
       {!error && messages && messages.length > 0 && (
-        <MessageList
-          className="flex-1 p-3"
-          messages={messages}
-          highlight={highlight}
-          follow={liveTailEnabled}
-        />
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          <MessageList
+            className="flex-1 p-3 pb-16"
+            messages={messages}
+            highlight={highlight}
+            follow={liveTailEnabled}
+            containerRef={transcriptRef}
+          />
+
+          {/* Floating quick actions: the transcript can be hundreds of rows of
+              tool output, so the way back to the top (and down to the newest
+              turn, or out to another session on a phone) stays under the
+              thumb instead of a long scroll away. */}
+          <div className="absolute bottom-3 right-3 z-10 flex items-center gap-1.5 rounded-full border border-border bg-background-base/95 p-1.5 shadow-lg">
+            {onOpenList && (
+              <Button
+                ghost
+                size="icon"
+                className="h-10 w-10 [&>svg]:size-5"
+                onClick={onOpenList}
+                aria-label={t.sessions.switchSession}
+                title={t.sessions.switchSession}
+                aria-controls="sessions-list-panel"
+                aria-expanded={listOpen}
+                aria-haspopup="dialog"
+              >
+                <MessagesSquare />
+              </Button>
+            )}
+            <Button
+              ghost
+              size="icon"
+              className="h-10 w-10 [&>svg]:size-5"
+              onClick={() => jumpTranscript("top")}
+              aria-label={t.sessions.scrollToTop}
+              title={t.sessions.scrollToTop}
+            >
+              <ArrowUpToLine />
+            </Button>
+            <Button
+              ghost
+              size="icon"
+              className="h-10 w-10 [&>svg]:size-5"
+              onClick={() => jumpTranscript("bottom")}
+              aria-label={t.sessions.scrollToBottom}
+              title={t.sessions.scrollToBottom}
+            >
+              <ArrowDownToLine />
+            </Button>
+          </div>
+        </div>
       )}
     </section>
   );

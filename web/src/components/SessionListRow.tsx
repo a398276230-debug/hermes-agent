@@ -177,7 +177,10 @@ export function SessionListRow({
   return (
     <div
       className={cn(
-        "min-w-0 max-w-full overflow-hidden border border-l-2 transition-colors",
+        // `shrink-0`: the rows live in a bounded, scrolling rail (and in the
+        // mobile drawer). Without it a long list compresses every row to a
+        // sliver instead of scrolling.
+        "min-w-0 max-w-full shrink-0 overflow-hidden border border-l-2 transition-colors",
         isActive
           ? "border-primary/40 border-l-primary bg-primary/[0.06]"
           : session.is_active

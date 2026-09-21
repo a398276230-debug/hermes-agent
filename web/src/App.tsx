@@ -401,6 +401,11 @@ export default function App() {
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
+  // Sessions is a master-detail workspace whose panes scroll independently
+  // (transcript viewport, session rail). Like chat/docs it needs a
+  // height-bounded outlet, or the row grows with the transcript and the rail
+  // scrolls away with it.
+  const isViewportLockedRoute = isChatRoute || normalizedPath === "/sessions";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
   // Defer mounting the persistent chat host (and its xterm chunk) until the
   // user has actually opened /chat at least once. Sticky after that so the
@@ -771,7 +776,7 @@ export default function App() {
                   "w-full min-w-0",
                   !isChatRoute &&
                     "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
-                  (isDocsRoute || isChatRoute) &&
+                  (isDocsRoute || isViewportLockedRoute) &&
                     "min-h-0 flex flex-1 flex-col",
                 )}
               >

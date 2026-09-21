@@ -457,6 +457,72 @@ describe("SessionsPage collapsible tool results", () => {
   });
 });
 
+// A transcript is routinely hundreds of rows of tool output. The pane is
+// viewport-locked (header pinned, session rail pinned on desktop), so the only
+// way back to either end — or out to another session on a phone — is the
+// floating bar in the corner.
+describe("SessionsPage floating transcript controls", () => {
+  const longRow = sessionRow("sid-long", "default", {
+    title: "Long",
+    message_count: 2,
+  });
+  const viewport = () =>
+    document.querySelector<HTMLElement>(
+      '[data-testid="session-transcript-viewport"]',
+    );
+
+  /** jsdom has no layout engine, so a scroll viewport has no extent to jump
+   *  within: state the extent the real browser would report. */
+  function stubScrollable(el: HTMLElement) {
+    Object.defineProperty(el, "scrollHeight", {
+      configurable: true,
+      value: 4000,
+    });
+    Object.defineProperty(el, "clientHeight", {
+      configurable: true,
+      value: 800,
+    });
+  }
+
+  it("jumps the transcript viewport back to the top and down to the newest turn", async () => {
+    apiMocks.getSessionMessages.mockResolvedValue({
+      messages: [
+        { role: "system", content: "oldest turn", timestamp: 1 },
+        { role: "system", content: "newest turn", timestamp: 2 },
+      ],
+    });
+    await renderSessionsPage([longRow]);
+    await selectRow();
+    await waitFor(() => document.body.textContent?.includes("newest turn") === true);
+
+    const el = viewport();
+    if (!el) throw new Error("transcript viewport not rendered");
+    stubScrollable(el);
+    // A reader parked somewhere in the middle of a long run.
+    el.scrollTop = 1200;
+
+    await act(async () => click(button("Back to top")));
+    expect(el.scrollTop).toBe(0);
+
+    await act(async () => click(button("Jump to latest")));
+    expect(el.scrollTop).toBe(el.scrollHeight);
+  });
+
+  it("opens the session-list drawer from the floating bar on a phone", async () => {
+    stubNarrowViewport();
+    apiMocks.getSessionMessages.mockResolvedValue({
+      messages: [{ role: "system", content: "body", timestamp: 1 }],
+    });
+    await renderSessionsPage([longRow], { rowActionsVisible: false });
+    await waitFor(() => viewport() !== null);
+
+    expect(document.getElementById("sessions-list-panel")).toBeNull();
+    await act(async () => click(button("Switch session")));
+    await waitFor(() => Boolean(document.getElementById("sessions-list-panel")));
+    expect(button("Switch session")!.getAttribute("aria-expanded")).toBe("true");
+  });
+});
+
 // Below lg the list is not a permanent rail: it lives behind a drawer button
 // in the transcript header, and picking a session closes it.
 describe("SessionsPage mobile session drawer", () => {
