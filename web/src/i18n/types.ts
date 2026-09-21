@@ -207,9 +207,15 @@ export interface Translations {
     selectedSessionsDeleted: string;
     failedToDeleteSelected: string;
     resumeInChat: string;
-    /** Expanded-row switch: re-read the transcript on a timer (read-only). */
+    /** Transcript-pane switch: re-read the session on a timer (read-only). */
     liveTail: string;
     liveTailFailed: string;
+    /** Label for the session-list pane, and for the mobile drawer that opens it. */
+    sessionList: string;
+    /** Accessible name for the transcript region in the main pane. */
+    transcript: string;
+    /** Main-pane empty state shown while no session is selected. */
+    selectSessionPrompt: string;
     /** Collapsed tool-result header: "{count} lines" summary chip. */
     toolResultLines: string;
     newChat: string;

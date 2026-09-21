@@ -52,7 +52,38 @@ function click(el: Element | null) {
 
 const button = (label: string) => document.querySelector(`button[aria-label="${label}"]`);
 
-async function renderSessionsPage(rows: Record<string, unknown>[]) {
+/**
+ * The clickable body of a session row. In the master-detail layout that click
+ * means "show this transcript in the main pane" (it used to expand an
+ * accordion), so every navigation gesture in these tests goes through here.
+ */
+function rowHeaders(): Element[] {
+  const headers: Element[] = [];
+  for (const btn of document.querySelectorAll('button[aria-label="Delete session"]')) {
+    const header = btn.closest("div.cursor-pointer");
+    if (header && !headers.includes(header)) headers.push(header);
+  }
+  return headers;
+}
+
+async function selectRow(index = 0) {
+  await act(async () => click(rowHeaders()[index] ?? null));
+}
+
+/** Report the narrow breakpoint (below lg) so the drawer path is exercised. */
+function stubNarrowViewport() {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    addEventListener() {},
+    matches: query.includes("max-width"),
+    media: query,
+    removeEventListener() {},
+  }));
+}
+
+async function renderSessionsPage(
+  rows: Record<string, unknown>[],
+  { rowActionsVisible = true } = {},
+) {
   // Page list uses limit 20; the overview tab's recent-cards fetch uses 50 —
   // keep the overview empty so the list view (with row actions) renders.
   apiMocks.getSessions.mockImplementation(async (limit: number) => ({
@@ -87,7 +118,12 @@ async function renderSessionsPage(rows: Record<string, unknown>[]) {
       </I18nProvider>,
     ),
   );
-  await waitFor(() => Boolean(button("Delete session")));
+  if (rowActionsVisible) {
+    await waitFor(() => Boolean(button("Delete session")));
+  } else {
+    // Below lg the rows live in the drawer, which starts closed.
+    await waitFor(() => Boolean(button("Session list")));
+  }
 }
 
 beforeEach(() => {
@@ -108,6 +144,9 @@ beforeEach(() => {
   // gsap ticks through rAF; a synchronous callback recurses to death.
   vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => setTimeout(() => cb(0), 0) as unknown as number);
   vi.stubGlobal("cancelAnimationFrame", (id: number) => clearTimeout(id));
+  // jsdom has no layout engine, so the transcript's "jump to the first search
+  // hit" / "open at the newest turn" effects would throw on scrollIntoView.
+  Element.prototype.scrollIntoView = vi.fn();
   vi.stubGlobal("matchMedia", () => ({ addEventListener() {}, matches: false, media: "", removeEventListener() {} }));
   sessionStorage.clear();
 });
@@ -118,15 +157,34 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
+const sessionRow = (
+  id: string,
+  profile: string,
+  overrides: Record<string, unknown> = {},
+) => ({
+  id,
+  profile,
+  source: "cli",
+  model: null,
+  title: id,
+  started_at: 1,
+  ended_at: null,
+  last_active: 1,
+  is_active: false,
+  message_count: 2,
+  tool_call_count: 0,
+  input_tokens: 1,
+  output_tokens: 1,
+  preview: id,
+  ...overrides,
+});
+
 describe("SessionsPage per-row profile routing (#99387)", () => {
   it("sends every per-row request to the row's owning profile, not the management default", async () => {
-    await renderSessionsPage([
-      { id: "sid-guanli", profile: "guanli", source: "cli", model: null, title: "Managed", started_at: 1, ended_at: null,
-        last_active: 1, is_active: false, message_count: 2, tool_call_count: 0, input_tokens: 1, output_tokens: 1, preview: "hi" },
-    ]);
+    await renderSessionsPage([sessionRow("sid-guanli", "guanli", { title: "Managed" })]);
 
-    // expand → transcript read
-    await act(async () => click(button("Delete session")!.closest("div.cursor-pointer")));
+    // select → transcript read
+    await selectRow();
     await waitFor(() => apiMocks.getSessionMessages.mock.calls.length > 0);
     expect(apiMocks.getSessionMessages).toHaveBeenCalledWith("sid-guanli", "guanli");
 
@@ -155,17 +213,11 @@ describe("SessionsPage per-row profile routing (#99387)", () => {
   it("routes a search result through the profile stamped on that result", async () => {
     apiMocks.searchSessions.mockResolvedValue({
       results: [
-        { id: "sid-worker", session_id: "sid-worker", profile: "worker", source: "cli", model: null,
-          title: "Search hit", started_at: 1, ended_at: null, last_active: 1, is_active: false,
-          message_count: 2, tool_call_count: 0, input_tokens: 1, output_tokens: 1, preview: "found",
+        { ...sessionRow("sid-worker", "worker", { title: "Search hit" }), session_id: "sid-worker",
           snippet: "found", role: "user", session_started: 1 },
       ],
     });
-    await renderSessionsPage([
-      { id: "sid-default", profile: "default", source: "cli", model: null, title: "Listed", started_at: 1,
-        ended_at: null, last_active: 1, is_active: false, message_count: 2, tool_call_count: 0,
-        input_tokens: 1, output_tokens: 1, preview: "listed" },
-    ]);
+    await renderSessionsPage([sessionRow("sid-default", "default", { title: "Listed" })]);
 
     const search = document.querySelector<HTMLInputElement>('input[placeholder]');
     if (!search) throw new Error("search input not rendered");
@@ -186,25 +238,43 @@ describe("SessionsPage per-row profile routing (#99387)", () => {
   });
 });
 
+// Master-detail: the list picks which session owns the main pane, so selecting
+// a row must swap the transcript (and only then read it).
+describe("SessionsPage master-detail transcript", () => {
+  const firstRow = sessionRow("sid-first", "default", { title: "First" });
+  const secondRow = sessionRow("sid-second", "default", { title: "Second" });
+
+  it("opens on the first session and swaps the pane when another row is picked", async () => {
+    apiMocks.getSessionMessages.mockImplementation(async (id: string) => ({
+      messages: [{ role: "system", content: `body of ${id}`, timestamp: 1 }],
+    }));
+    await renderSessionsPage([firstRow, secondRow]);
+
+    // No explicit pick yet — the first row stands in, so the pane is never blank.
+    await waitFor(() =>
+      apiMocks.getSessionMessages.mock.calls.some(([id]) => id === "sid-first"),
+    );
+    expect(document.body.textContent).toContain("body of sid-first");
+
+    await selectRow(1);
+    await waitFor(() =>
+      apiMocks.getSessionMessages.mock.calls.some(([id]) => id === "sid-second"),
+    );
+    await waitFor(() => document.body.textContent?.includes("body of sid-second") === true);
+    // …and the previous transcript is gone, not stacked next to it.
+    expect(apiMocks.getSessionMessages).toHaveBeenLastCalledWith("sid-second", "default");
+  });
+});
+
 // Auto-refresh is a monitor: it re-reads the transcript while the agent
 // writes it in another process, and MUST NOT write to the session store.
-describe("SessionsPage expanded-row live tail", () => {
-  const liveRow = {
-    id: "sid-live",
-    profile: "default",
-    source: "cli",
-    model: null,
+describe("SessionsPage transcript live tail", () => {
+  const liveRow = sessionRow("sid-live", "default", {
     title: "Monitored",
-    started_at: 1,
-    ended_at: null,
-    last_active: 1,
     is_active: true,
     message_count: 1,
-    tool_call_count: 0,
-    input_tokens: 1,
-    output_tokens: 1,
-    preview: "hi",
-  };
+  });
+  const otherRow = sessionRow("sid-other", "default", { title: "Other" });
   const firstMessage = { role: "system", content: "first line", timestamp: 1 };
   const secondMessage = { role: "system", content: "second line", timestamp: 2 };
   const liveToggle = () => document.getElementById("sessions-live-tail-sid-live");
@@ -222,7 +292,6 @@ describe("SessionsPage expanded-row live tail", () => {
       });
       await renderSessionsPage([liveRow]);
 
-      await act(async () => click(button("Delete session")!.closest("div.cursor-pointer")));
       await waitFor(() => apiMocks.getSessionMessages.mock.calls.length >= 1);
 
       // Off until asked for.
@@ -236,7 +305,7 @@ describe("SessionsPage expanded-row live tail", () => {
         vi.advanceTimersByTime(3000);
       });
       await waitFor(() => apiMocks.getSessionMessages.mock.calls.length > beforeToggle);
-      // The poll follows the row's own profile, exactly like the expand read.
+      // The poll follows the pane's own profile, exactly like the initial read.
       expect(apiMocks.getSessionMessages).toHaveBeenLastCalledWith("sid-live", "default");
       await waitFor(() => document.body.textContent?.includes("second line") === true);
 
@@ -261,27 +330,42 @@ describe("SessionsPage expanded-row live tail", () => {
     }
   });
 
-  it("stops the cadence when the row is collapsed", async () => {
+  it("moves the cadence to the newly selected session and stops reading the old one", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
-      await renderSessionsPage([liveRow]);
-      const header = () => button("Delete session")!.closest("div.cursor-pointer");
-      await act(async () => click(header()));
+      await renderSessionsPage([liveRow, otherRow]);
       await waitFor(() => apiMocks.getSessionMessages.mock.calls.length >= 1);
 
+      // The page-level switch is remembered across selections: a user watching
+      // a run keeps watching when they look at another session.
       await act(async () => click(liveToggle()));
       await act(async () => {
         vi.advanceTimersByTime(3000);
       });
-      await waitFor(() => apiMocks.getSessionMessages.mock.calls.length >= 2);
+      await waitFor(() =>
+        apiMocks.getSessionMessages.mock.calls.filter(([id]) => id === "sid-live").length >= 2,
+      );
 
-      await act(async () => click(header()));
-      await waitFor(() => liveToggle() === null);
-      const afterCollapse = apiMocks.getSessionMessages.mock.calls.length;
+      await selectRow(1);
+      await waitFor(() => Boolean(document.getElementById("sessions-live-tail-sid-other")));
+      expect(
+        document.getElementById("sessions-live-tail-sid-other")?.getAttribute("aria-checked"),
+      ).toBe("true");
+
+      const liveCallsAtSwitch = apiMocks.getSessionMessages.mock.calls.filter(
+        ([id]) => id === "sid-live",
+      ).length;
       await act(async () => {
-        vi.advanceTimersByTime(15000);
+        vi.advanceTimersByTime(9000);
       });
-      expect(apiMocks.getSessionMessages.mock.calls.length).toBe(afterCollapse);
+      await waitFor(() =>
+        apiMocks.getSessionMessages.mock.calls.filter(([id]) => id === "sid-other").length >= 2,
+      );
+      // The pane is keyed by session id, so the old transcript's timer died
+      // with it — no orphaned polls against a session nobody is reading.
+      expect(
+        apiMocks.getSessionMessages.mock.calls.filter(([id]) => id === "sid-live").length,
+      ).toBe(liveCallsAtSwitch);
     } finally {
       vi.useRealTimers();
     }
@@ -291,22 +375,12 @@ describe("SessionsPage expanded-row live tail", () => {
 // Tool results (read_file, terminal dumps) are the long rows on a phone, so
 // they render as a collapsed summary and mount the full body only on demand.
 describe("SessionsPage collapsible tool results", () => {
-  const toolRow = {
-    id: "sid-tools",
-    profile: "default",
-    source: "cli",
-    model: null,
+  const toolRow = sessionRow("sid-tools", "default", {
     title: "Tool heavy",
-    started_at: 1,
-    ended_at: null,
-    last_active: 1,
-    is_active: false,
     message_count: 1,
     tool_call_count: 1,
-    input_tokens: 1,
-    output_tokens: 1,
     preview: "read_file",
-  };
+  });
   const toolMessage = {
     role: "tool",
     tool_name: "read_file",
@@ -325,16 +399,7 @@ describe("SessionsPage collapsible tool results", () => {
 
   async function expandRow() {
     await renderSessionsPage([toolRow]);
-    await expandAgain();
-  }
-
-  // When FTS is active the list is fed by search results, so the row is
-  // re-rendered with the search term as its highlight — the header click is
-  // the same gesture either way.
-  async function expandAgain() {
-    await act(async () =>
-      click(button("Delete session")!.closest("div.cursor-pointer")),
-    );
+    await selectRow();
   }
 
   it("collapses by default and mounts the full body only once expanded", async () => {
@@ -384,10 +449,40 @@ describe("SessionsPage collapsible tool results", () => {
     });
     await waitFor(() => apiMocks.searchSessions.mock.calls.length > 0);
 
-    await expandAgain();
+    await selectRow();
     await waitFor(() => toolToggle() !== null);
 
     // The search hit is the row the reader asked for, so it starts open.
     expect(toolToggle()!.getAttribute("aria-expanded")).toBe("true");
+  });
+});
+
+// Below lg the list is not a permanent rail: it lives behind a drawer button
+// in the transcript header, and picking a session closes it.
+describe("SessionsPage mobile session drawer", () => {
+  const firstRow = sessionRow("sid-first", "default", { title: "First" });
+  const secondRow = sessionRow("sid-second", "default", { title: "Second" });
+
+  it("opens the list from the transcript header, switches session, and closes", async () => {
+    stubNarrowViewport();
+    apiMocks.getSessionMessages.mockImplementation(async (id: string) => ({
+      messages: [{ role: "system", content: `body of ${id}`, timestamp: 1 }],
+    }));
+    await renderSessionsPage([firstRow, secondRow], { rowActionsVisible: false });
+
+    // The desktop rail is not rendered at all in this mode.
+    expect(document.getElementById("sessions-list-panel")).toBeNull();
+
+    await act(async () => click(button("Session list")));
+    await waitFor(() => Boolean(document.getElementById("sessions-list-panel")));
+    expect(button("Session list")!.getAttribute("aria-expanded")).toBe("true");
+
+    // Picking a row swaps the pane and dismisses the drawer in one gesture.
+    await selectRow(1);
+    await waitFor(() =>
+      apiMocks.getSessionMessages.mock.calls.some(([id]) => id === "sid-second"),
+    );
+    await waitFor(() => document.getElementById("sessions-list-panel") === null);
+    await waitFor(() => document.body.textContent?.includes("body of sid-second") === true);
   });
 });

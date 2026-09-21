@@ -1,13 +1,12 @@
 import {
   useEffect,
-  useId,
   useLayoutEffect,
   useMemo,
   useState,
   useCallback,
   useRef,
+  type ReactNode,
 } from "react";
-import { useNavigate } from "react-router";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -17,51 +16,41 @@ import {
   Database,
   ListFilter,
   MessageSquare,
-  Search,
   Trash2,
   Clock,
-  Terminal,
-  Globe,
-  MessageCircle,
-  Hash,
   X,
-  Play,
   Eraser,
-  Download,
   Upload,
-  Pencil,
-  Check,
   Archive,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { formatSessionPruneResult } from "@/lib/session-prune";
 import { shouldRefreshSessions } from "@/lib/session-refresh";
-import { toolResultPreview } from "@/lib/tool-result-preview";
 import {
-  SESSION_LIVE_TAIL_INTERVAL_MS,
-  isPinnedToBottom,
-  transcriptSignature,
-} from "@/lib/session-live-tail";
-import {
-  importSummary,
-  parseImportSessions,
-} from "@/lib/session-import";
+  AUTOMATION_SESSION_SOURCES,
+  NO_MATCHING_SESSION_SOURCE,
+  isAutomationSource,
+  sourceBelongsToCategory,
+  sourceLabel,
+  sourceVisual,
+  type SessionFilterCategory,
+  type SourceSelectionsByCategory,
+} from "@/lib/session-source";
+import { importSummary, parseImportSessions } from "@/lib/session-import";
 import type {
   SessionInfo,
-  SessionMessage,
   SessionSearchResult,
   SessionStoreStats,
   StatusResponse,
 } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
-import { Markdown } from "@/components/Markdown";
 import { PlatformsCard } from "@/components/PlatformsCard";
+import { SessionListPanel } from "@/components/SessionListPanel";
+import { SessionTranscriptPane } from "@/components/SessionTranscriptPane";
+import { BottomSheet } from "@nous-research/ui/ui/components/bottom-sheet";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
-import { Label } from "@nous-research/ui/ui/components/label";
-import { Switch } from "@nous-research/ui/ui/components/switch";
-import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Segmented } from "@nous-research/ui/ui/components/segmented";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Badge } from "@nous-research/ui/ui/components/badge";
@@ -85,948 +74,12 @@ import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { apiErrorFromResponse, errorMessage } from "@/lib/api-error";
 
-const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
-  {
-    cli: { icon: Terminal, color: "text-primary" },
-    tui: { icon: Terminal, color: "text-primary" },
-    telegram: { icon: MessageCircle, color: "text-[oklch(0.65_0.15_250)]" },
-    discord: { icon: Hash, color: "text-[oklch(0.65_0.15_280)]" },
-    slack: { icon: MessageSquare, color: "text-[oklch(0.7_0.15_155)]" },
-    whatsapp: { icon: Globe, color: "text-success" },
-    whatsapp_cloud: { icon: Globe, color: "text-success" },
-    signal: { icon: MessageCircle, color: "text-success" },
-    matrix: { icon: MessageCircle, color: "text-[oklch(0.65_0.15_250)]" },
-    email: { icon: MessageSquare, color: "text-[oklch(0.7_0.15_155)]" },
-    sms: { icon: MessageCircle, color: "text-success" },
-    cron: { icon: Clock, color: "text-warning" },
-    tool: { icon: Play, color: "text-warning" },
-    oneshot: { icon: Terminal, color: "text-warning" },
-    api_server: { icon: Globe, color: "text-muted-foreground" },
-    acp: { icon: Database, color: "text-muted-foreground" },
-    hermes_flow: { icon: Play, color: "text-warning" },
-    vulcan_delegate: { icon: Play, color: "text-warning" },
-    webhook: { icon: Globe, color: "text-warning" },
-  };
-
-const AUTOMATION_SESSION_SOURCES = [
-  "cron",
-  "tool",
-  "oneshot",
-  "api_server",
-  "acp",
-  "hermes_flow",
-  "vulcan_delegate",
-  "webhook",
-];
-const AUTOMATION_SESSION_SOURCE_SET = new Set(AUTOMATION_SESSION_SOURCES);
-const NO_MATCHING_SESSION_SOURCE = "__hermes_dashboard_no_matching_source__";
-
-type SessionFilterCategory = "chats" | "automation" | "all";
-type SourceSelectionsByCategory = Record<SessionFilterCategory, string[] | null>;
-
-function isAutomationSource(source: string): boolean {
-  return AUTOMATION_SESSION_SOURCE_SET.has(source);
-}
-
-function sourceBelongsToCategory(
-  source: string,
-  category: SessionFilterCategory,
-): boolean {
-  if (category === "all") return true;
-  if (category === "automation") return isAutomationSource(source);
-  return !isAutomationSource(source);
-}
-
-function sourceLabel(source: string): string {
-  switch (source) {
-    case "api_server":
-      return "API server";
-    case "acp":
-      return "ACP";
-    case "cli":
-      return "CLI";
-    case "tui":
-      return "TUI";
-    case "telegram":
-      return "Telegram";
-    case "discord":
-      return "Discord";
-    case "slack":
-      return "Slack";
-    case "whatsapp":
-      return "WhatsApp";
-    case "whatsapp_cloud":
-      return "WhatsApp Cloud";
-    case "sms":
-      return "SMS";
-    case "cron":
-      return "Cron";
-    case "tool":
-      return "Tool";
-    case "hermes_flow":
-      return "Hermes Flow";
-    case "vulcan_delegate":
-      return "Vulcan delegate";
-    case "webhook":
-      return "Webhook";
-    default:
-      return source
-        .split("_")
-        .filter(Boolean)
-        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-        .join(" ");
-  }
-}
-
-/** Render an FTS5 snippet with highlighted matches.
- *  The backend wraps matches in >>> and <<< delimiters. */
-function SnippetHighlight({ snippet }: { snippet: string }) {
-  const parts: React.ReactNode[] = [];
-  const regex = />>>(.*?)<<</g;
-  let last = 0;
-  let match: RegExpExecArray | null;
-  let i = 0;
-  while ((match = regex.exec(snippet)) !== null) {
-    if (match.index > last) {
-      parts.push(snippet.slice(last, match.index));
-    }
-    parts.push(
-      <mark key={i++} className="bg-warning/30 text-warning px-0.5">
-        {match[1]}
-      </mark>,
-    );
-    last = regex.lastIndex;
-  }
-  if (last < snippet.length) {
-    parts.push(snippet.slice(last));
-  }
-  return (
-    <p className="font-mondwest normal-case mt-0.5 min-w-0 max-w-full truncate text-xs text-text-secondary">
-      {parts}
-    </p>
-  );
-}
-
-function ToolCallBlock({
-  toolCall,
-}: {
-  toolCall: { id: string; function: { name: string; arguments: string } };
-}) {
-  const [open, setOpen] = useState(false);
-  const { t } = useI18n();
-
-  let args = toolCall.function.arguments;
-  try {
-    args = JSON.stringify(JSON.parse(args), null, 2);
-  } catch {
-    // keep as-is
-  }
-
-  return (
-    <div className="mt-2 border border-warning/20 bg-warning/5">
-      <ListItem
-        onClick={() => setOpen(!open)}
-        aria-label={`${open ? t.common.collapse : t.common.expand} tool call ${toolCall.function.name}`}
-        aria-expanded={open}
-        className="px-3 py-2 text-xs text-warning hover:bg-warning/10 hover:text-warning"
-      >
-        {open ? (
-          <ChevronDown className="h-3 w-3" />
-        ) : (
-          <ChevronRight className="h-3 w-3" />
-        )}
-        <span className="font-mono-ui font-medium">
-          {toolCall.function.name}
-        </span>
-        <span className="text-warning/50 ml-auto">{toolCall.id}</span>
-      </ListItem>
-      {open && (
-        <pre className="border-t border-warning/20 px-3 py-2 text-xs text-warning/80 overflow-x-auto whitespace-pre-wrap font-mono">
-          {args}
-        </pre>
-      )}
-    </div>
-  );
-}
-
-// Context-compaction handoff blocks are persisted as ``role="user"`` or
-// ``role="assistant"`` with content starting with one of these prefixes —
-// they're metadata inserted by ``agent/context_compressor.py``, NOT real
-// turns the user typed or the model replied with. Rendering them with
-// the same styling as regular messages confuses operators scrolling the
-// session timeline (#29824 — "WebUI can show context compaction block
-// instead of latest assistant response after compression"), so we
-// detect them here and downgrade them to a muted, clearly-labelled
-// "Context handoff" row.
-//
-// Keep these prefixes (and the END marker below) in sync with
-// ``SUMMARY_PREFIX`` / ``LEGACY_SUMMARY_PREFIX`` and the
-// merge-into-tail marker in ``agent/context_compressor.py``.
-const COMPACTION_PREFIXES = [
-  "[CONTEXT COMPACTION — REFERENCE ONLY]",
-  "[CONTEXT COMPACTION - REFERENCE ONLY]",
-  "[CONTEXT SUMMARY]:",
-] as const;
-
-// Marker the compressor inserts between a merged summary and the
-// original tail message content. When the summary role would collide
-// with both head and tail roles (e.g. head ends with ``user`` and tail
-// starts with ``assistant``), the compressor merges the summary as a
-// prefix on the first tail message instead of inserting a standalone
-// row. We split on this marker so the WebUI still shows the original
-// assistant reply as its own readable bubble — otherwise the merged
-// row reads as a single opaque "Context compaction" block and the
-// user can't see the reply (#29824).
-const COMPACTION_END_MARKER =
-  "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---";
-
-interface CompactionSplit {
-  /** Summary text (header + body, without the end marker). */
-  summary: string;
-  /** Original message content that came after the end marker. */
-  remainder: string;
-}
-
-function splitCompactionContent(content: string): CompactionSplit | null {
-  const head = content.trimStart();
-  if (!COMPACTION_PREFIXES.some((p) => head.startsWith(p))) return null;
-  const markerIdx = content.indexOf(COMPACTION_END_MARKER);
-  if (markerIdx < 0) {
-    return { summary: content, remainder: "" };
-  }
-  return {
-    summary: content.slice(0, markerIdx),
-    remainder: content
-      .slice(markerIdx + COMPACTION_END_MARKER.length)
-      .replace(/^\s+/, ""),
-  };
-}
-
-
-function MessageBubble({
-  msg,
-  highlight,
-}: {
-  msg: SessionMessage;
-  highlight?: string;
-}) {
-  const { t } = useI18n();
-
-  const ROLE_STYLES: Record<
-    string,
-    { bg: string; text: string; label: string }
-  > = {
-    user: {
-      bg: "bg-primary/10",
-      text: "text-primary",
-      label: t.sessions.roles.user,
-    },
-    assistant: {
-      bg: "bg-success/10",
-      text: "text-success",
-      label: t.sessions.roles.assistant,
-    },
-    system: {
-      bg: "bg-muted",
-      text: "text-muted-foreground",
-      label: t.sessions.roles.system,
-    },
-    tool: {
-      bg: "bg-warning/10",
-      text: "text-warning",
-      label: t.sessions.roles.tool,
-    },
-    // Compaction handoffs render as faded system-style metadata with a
-    // distinctive label so they can't be mistaken for real assistant
-    // replies during a scroll-back review (#29824).
-    compaction: {
-      bg: "bg-muted/50",
-      text: "text-muted-foreground italic",
-      label: "Context handoff",
-    },
-  };
-
-  // When a compaction handoff is merged into the front of the first
-  // tail message (the compressor's double-collision path —
-  // ``_merge_summary_into_tail`` in ``agent/context_compressor.py``),
-  // the message we received is ``[CONTEXT COMPACTION ...] + END_MARKER
-  // + <original assistant reply>``. We split it back into two visual
-  // rows here so the operator's actual answer survives as a readable
-  // bubble next to the (clearly-labelled) handoff metadata (#29824).
-  const compactionSplit =
-    typeof msg.content === "string"
-      ? splitCompactionContent(msg.content)
-      : null;
-
-  if (compactionSplit && compactionSplit.remainder) {
-    return (
-      <>
-        <MessageBubble
-          msg={{ ...msg, content: compactionSplit.summary }}
-          highlight={highlight}
-        />
-        <MessageBubble
-          msg={{
-            ...msg,
-            content: compactionSplit.remainder,
-            // The remainder is the original assistant reply that the
-            // compressor pre-pended the summary to — render with the
-            // normal assistant styling, NOT the muted handoff style.
-            // ``isCompactionMessage`` returns false on this stripped
-            // content because it no longer starts with the prefix.
-          }}
-          highlight={highlight}
-        />
-      </>
-    );
-  }
-
-  const isCompaction = compactionSplit !== null;
-  const style = isCompaction
-    ? ROLE_STYLES.compaction
-    : ROLE_STYLES[msg.role] ?? ROLE_STYLES.system;
-  const label = isCompaction
-    ? ROLE_STYLES.compaction.label
-    : msg.tool_name
-      ? `${t.sessions.roles.tool}: ${msg.tool_name}`
-      : style.label;
-
-  // Check if any search term appears as a prefix of any word in content
-  const isHit = (() => {
-    if (!highlight || !msg.content) return false;
-    const content = msg.content.toLowerCase();
-    const terms = highlight.toLowerCase().split(/\s+/).filter(Boolean);
-    return terms.some((term) => content.includes(term));
-  })();
-
-  // Split search query into terms for inline highlighting
-  const highlightTerms =
-    isHit && highlight ? highlight.split(/\s+/).filter(Boolean) : undefined;
-
-  // Tool results are the long tail of a transcript — one read_file or
-  // terminal dump can be hundreds of lines. They render as a collapsed
-  // summary row so a phone reader can scan past them; a search hit expands
-  // automatically because that is the row the reader came for. A row with no
-  // body has nothing to collapse and keeps the plain layout.
-  if (msg.role === "tool" && msg.content) {
-    return (
-      <ToolResultBubble
-        msg={msg}
-        label={label}
-        style={style}
-        isHit={isHit}
-        highlightTerms={highlightTerms}
-      />
-    );
-  }
-
-  return (
-    <div
-      className={`${style.bg} p-3 ${isHit ? "ring-1 ring-warning/40" : ""}`}
-      data-search-hit={isHit || undefined}
-    >
-      <div className="flex items-center gap-2 mb-1">
-        <span className={`text-xs font-semibold ${style.text}`}>{label}</span>
-        {isHit && (
-          <Badge tone="warning" className="text-xs py-0 px-1.5">
-            {t.common.match}
-          </Badge>
-        )}
-        {msg.timestamp && (
-          <span className="text-xs text-text-tertiary">
-            {timeAgo(msg.timestamp)}
-          </span>
-        )}
-      </div>
-      {msg.content &&
-        (msg.role === "system" ? (
-          <div className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
-            {msg.content}
-          </div>
-        ) : (
-          <Markdown content={msg.content} highlightTerms={highlightTerms} />
-        ))}
-      {msg.tool_calls && msg.tool_calls.length > 0 && (
-        <div className="mt-1">
-          {msg.tool_calls.map((tc) => (
-            <ToolCallBlock key={tc.id} toolCall={tc} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * Collapsible tool-result bubble.
- *
- * Tool output dwarfs everything around it, which makes scroll-back on a phone
- * miserable. The header stays visible — tool name, time, line count and a
- * one-line preview — and the full markdown body mounts only when expanded. A
- * bubble matching the active search starts expanded, since that is exactly
- * the content the reader asked to see.
- */
-function ToolResultBubble({
-  msg,
-  label,
-  style,
-  isHit,
-  highlightTerms,
-}: {
-  msg: SessionMessage;
-  label: string;
-  style: { bg: string; text: string };
-  isHit: boolean;
-  highlightTerms?: string[];
-}) {
-  const { t } = useI18n();
-  const bodyId = useId();
-  // `null` follows the default (expanded while it is a search hit); an
-  // explicit toggle pins the reader's choice for the life of the bubble.
-  const [override, setOverride] = useState<boolean | null>(null);
-  const expanded = override ?? isHit;
-  const content = msg.content ?? "";
-  const { lines, preview } = toolResultPreview(content);
-
-  return (
-    <div
-      className={`${style.bg} p-3 ${isHit ? "ring-1 ring-warning/40" : ""}`}
-      data-search-hit={isHit || undefined}
-    >
-      {/* The whole header is the toggle: on touch there is no hover state to
-          reveal a small chevron, so the target spans the full row (min-h-11
-          keeps it at the 44px comfortable-tap minimum). */}
-      <button
-        type="button"
-        onClick={() => setOverride(!expanded)}
-        aria-expanded={expanded}
-        aria-controls={bodyId}
-        className="flex w-full min-h-11 items-start gap-2 text-left"
-      >
-        <span className={`mt-0.5 shrink-0 ${style.text}`} aria-hidden="true">
-          {expanded ? (
-            <ChevronDown className="h-4 w-4" />
-          ) : (
-            <ChevronRight className="h-4 w-4" />
-          )}
-        </span>
-        <span className="flex min-w-0 flex-1 flex-col gap-1">
-          <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-            <span className={`text-xs font-semibold ${style.text}`}>
-              {label}
-            </span>
-            {isHit && (
-              <Badge tone="warning" className="text-xs py-0 px-1.5">
-                {t.common.match}
-              </Badge>
-            )}
-            {msg.timestamp && (
-              <span className="text-xs text-text-tertiary">
-                {timeAgo(msg.timestamp)}
-              </span>
-            )}
-            {lines > 1 && (
-              <span className="text-xs text-text-tertiary">
-                {t.sessions.toolResultLines.replace("{count}", String(lines))}
-              </span>
-            )}
-          </span>
-          {!expanded && preview && (
-            <span className="block truncate font-mono text-xs text-foreground/70">
-              {preview}
-            </span>
-          )}
-          <span className="sr-only">
-            {expanded ? t.common.collapse : t.common.expand}
-          </span>
-        </span>
-      </button>
-      {expanded && content && (
-        <div id={bodyId} className="mt-2">
-          <Markdown content={content} highlightTerms={highlightTerms} />
-        </div>
-      )}
-      {msg.tool_calls && msg.tool_calls.length > 0 && (
-        <div className="mt-1">
-          {msg.tool_calls.map((tc) => (
-            <ToolCallBlock key={tc.id} toolCall={tc} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * Message list with auto-scroll to first search hit, and optional
- * follow-the-bottom behaviour for the live tail.
- */
-function MessageList({
-  messages,
-  highlight,
-  follow = false,
-}: {
-  messages: SessionMessage[];
-  highlight?: string;
-  follow?: boolean;
-}) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  // Tracks whether the viewport is at the bottom BEFORE new rows render, so
-  // appending messages only scrolls when the reader was already following
-  // along (and never yanks someone reading history back down).
-  const pinnedRef = useRef(true);
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const onScroll = () => {
-      pinnedRef.current = isPinnedToBottom(el);
-    };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => {
-      el.removeEventListener("scroll", onScroll);
-    };
-  }, []);
-
-  // A search highlight owns the scroll position while it is active, so the
-  // live tail stands down rather than fighting the "jump to first hit".
-  const followBottom = follow && !highlight;
-  const followingRef = useRef(false);
-  useEffect(() => {
-    const el = containerRef.current;
-    const justEnabled = followBottom && !followingRef.current;
-    followingRef.current = followBottom;
-    if (!el || !followBottom) return;
-    if (justEnabled || pinnedRef.current) {
-      el.scrollTop = el.scrollHeight;
-      pinnedRef.current = true;
-    }
-  }, [followBottom, messages]);
-
-  useEffect(() => {
-    if (!highlight || !containerRef.current) return;
-    // Scroll to first hit after render
-    const timer = setTimeout(() => {
-      const hit = containerRef.current?.querySelector("[data-search-hit]");
-      if (hit) {
-        hit.scrollIntoView({ behavior: "smooth", block: "center" });
-      }
-    }, 50);
-    return () => clearTimeout(timer);
-  }, [messages, highlight]);
-
-  return (
-    <div
-      ref={containerRef}
-      className="flex flex-col gap-3 max-h-[600px] overflow-y-auto pr-2"
-    >
-      {messages.map((msg, i) => (
-        <MessageBubble key={i} msg={msg} highlight={highlight} />
-      ))}
-    </div>
-  );
-}
-
-function SessionRow({
-  session,
-  snippet,
-  searchQuery,
-  isExpanded,
-  isSelected,
-  onToggle,
-  onSelectClick,
-  onDelete,
-  onRename,
-  onExport,
-  resumeInChatEnabled,
-  liveTailEnabled,
-  onToggleLiveTail,
-  onLiveChange,
-}: SessionRowProps) {
-  const [messages, setMessages] = useState<SessionMessage[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [liveError, setLiveError] = useState<string | null>(null);
-  const [renaming, setRenaming] = useState(false);
-  const [renameValue, setRenameValue] = useState(session.title ?? "");
-  const [renameSaving, setRenameSaving] = useState(false);
-  const { t } = useI18n();
-  const navigate = useNavigate();
-  // Stamp of the transcript currently on screen, so a poll that returns the
-  // same content leaves state — and the reader's scroll position — untouched.
-  const transcriptStampRef = useRef<string | null>(null);
-
-  // Apply a freshly fetched transcript. Returns whether anything changed, so
-  // a live poll can skip the row-metadata refresh when the agent is idle.
-  const applyTranscript = useCallback((next: SessionMessage[]) => {
-    const stamp = transcriptSignature(next);
-    if (stamp === transcriptStampRef.current) return false;
-    transcriptStampRef.current = stamp;
-    setMessages(next);
-    return true;
-  }, []);
-
-  useEffect(() => {
-    if (!isExpanded || messages !== null) return;
-    let cancelled = false;
-    api
-      .getSessionMessages(session.id, session.profile)
-      .then((resp) => {
-        if (!cancelled) applyTranscript(resp.messages);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(errorMessage(err));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [applyTranscript, isExpanded, session.id, session.profile, messages]);
-
-  // Live tail: strictly read-only re-reads of the transcript while the row is
-  // expanded and the user has switched auto-refresh on. ``getSessionMessages``
-  // is a GET that opens the session DB read-only on the server, so polling
-  // never writes to the store and never contends for the agent's write lock.
-  useEffect(() => {
-    if (!isExpanded || !liveTailEnabled) return;
-    let cancelled = false;
-    let inFlight = false;
-    const poll = () => {
-      // Skip a tick if the previous read is still outstanding — a slow or
-      // hung store must not stack requests.
-      if (inFlight) return;
-      inFlight = true;
-      api
-        .getSessionMessages(session.id, session.profile)
-        .then((resp) => {
-          if (cancelled) return;
-          setLiveError(null);
-          // A successful poll also heals a failed initial expand read.
-          setError(null);
-          if (applyTranscript(resp.messages)) onLiveChange();
-        })
-        .catch((err) => {
-          // Keep the transcript we already have: a transient read failure
-          // must not blank a page the user is monitoring.
-          if (!cancelled) setLiveError(errorMessage(err));
-        })
-        .finally(() => {
-          inFlight = false;
-        });
-    };
-    const id = setInterval(poll, SESSION_LIVE_TAIL_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [
-    applyTranscript,
-    isExpanded,
-    liveTailEnabled,
-    onLiveChange,
-    session.id,
-    session.profile,
-  ]);
-
-  // Toggling clears the last poll failure so a stale badge cannot outlive
-  // the run that produced it (an effect here would trip the
-  // react-hooks/set-state-in-effect lint trap).
-  const toggleLiveTail = useCallback(
-    (next: boolean) => {
-      setLiveError(null);
-      onToggleLiveTail(next);
-    },
-    [onToggleLiveTail],
-  );
-
-  const liveTailId = `sessions-live-tail-${session.id}`;
-  const sourceKey = session.source?.split(":")[0];
-  const sourceInfo = (session.source
-    ? SOURCE_CONFIG[session.source] ?? (sourceKey ? SOURCE_CONFIG[sourceKey] : null)
-    : null) ?? { icon: Globe, color: "text-muted-foreground" };
-  const SourceIcon = sourceInfo.icon;
-  const hasTitle = session.title && session.title !== "Untitled";
-
-  const submitRename = async () => {
-    const value = renameValue.trim();
-    if (!value || value === session.title) {
-      setRenaming(false);
-      return;
-    }
-    setRenameSaving(true);
-    try {
-      await onRename(session.id, value);
-      setRenaming(false);
-    } finally {
-      setRenameSaving(false);
-    }
-  };
-
-  const actionButtons = (
-    <>
-      <Badge tone="outline" className="text-xs">
-        <SourceIcon className={`mr-1 h-3 w-3 ${sourceInfo.color}`} />
-        {session.source ? sourceLabel(session.source) : "local"}
-      </Badge>
-
-      {resumeInChatEnabled && (
-        <Button
-          ghost
-          size="icon"
-          className="text-muted-foreground hover:text-success"
-          aria-label={t.sessions.resumeInChat}
-          title={t.sessions.resumeInChat}
-          onClick={(e) => {
-            e.stopPropagation();
-            navigate(`/chat?resume=${encodeURIComponent(session.id)}`);
-          }}
-        >
-          <Play />
-        </Button>
-      )}
-
-      <Button
-        ghost
-        size="icon"
-        className="text-muted-foreground hover:text-foreground"
-        aria-label="Rename session"
-        title="Rename session"
-        onClick={(e) => {
-          e.stopPropagation();
-          setRenameValue(
-            session.title && session.title !== "Untitled"
-              ? session.title
-              : "",
-          );
-          setRenaming(true);
-        }}
-      >
-        <Pencil />
-      </Button>
-
-      <Button
-        ghost
-        size="icon"
-        className="text-muted-foreground hover:text-foreground"
-        aria-label="Export session"
-        title="Export session JSON"
-        onClick={(e) => {
-          e.stopPropagation();
-          onExport(session.id);
-        }}
-      >
-        <Download />
-      </Button>
-
-      <Button
-        ghost
-        destructive
-        size="icon"
-        aria-label={t.sessions.deleteSession}
-        onClick={(e) => {
-          e.stopPropagation();
-          onDelete();
-        }}
-      >
-        <Trash2 />
-      </Button>
-    </>
-  );
-
-  // Selected rows get a stronger left-edge accent + tinted background so the
-  // selection state is unambiguous even when scrolling past the bulk-action
-  // bar at the top. Beat the is_active styling — explicit user selection
-  // takes priority over "this session is live".
-  const containerClasses = isSelected
-    ? "border-primary/40 bg-primary/[0.06]"
-    : session.is_active
-      ? "border-success/30 bg-success/[0.03]"
-      : "border-border";
-
-  // Clicking the checkbox must NOT toggle row expansion; selection and
-  // expansion are independent gestures. We bind ``onClick`` directly on
-  // the Checkbox (which Radix forwards to its underlying ``<button
-  // role=checkbox>``) so the event carries the real ``shiftKey`` state
-  // for range-select AND so keyboard activation (Space on the focused
-  // checkbox) toggles selection via the same code path — the browser
-  // synthesises a click on <button> for Space, so one handler covers
-  // mouse + keyboard cleanly.
-  const handleSelectClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    onSelectClick(e);
-  };
-
-  return (
-    <div
-      className={`max-w-full min-w-0 overflow-hidden border transition-colors ${containerClasses}`}
-    >
-      <div
-        className="flex cursor-pointer items-start gap-3 p-3 transition-colors hover:bg-secondary/30"
-        onClick={onToggle}
-      >
-        <span className="flex shrink-0 items-center pt-0.5">
-          <Checkbox
-            checked={isSelected}
-            onClick={handleSelectClick}
-            aria-label={t.sessions.selectSession}
-          />
-        </span>
-        <div className={`shrink-0 pt-0.5 ${sourceInfo.color}`}>
-          <SourceIcon className="h-4 w-4" />
-        </div>
-        <div className="flex min-w-0 flex-1 flex-col gap-2">
-          <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
-            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <div className="flex min-w-0 items-center gap-2">
-                {renaming ? (
-                  <div
-                    className="flex min-w-0 flex-1 items-center gap-1.5"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <Input
-                      autoFocus
-                      value={renameValue}
-                      onChange={(e) => setRenameValue(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") void submitRename();
-                        else if (e.key === "Escape") setRenaming(false);
-                      }}
-                      placeholder="Session title"
-                      className="h-7 min-w-0 flex-1 py-0 text-sm"
-                      disabled={renameSaving}
-                    />
-                    <Button
-                      ghost
-                      size="icon"
-                      className="text-muted-foreground hover:text-success"
-                      aria-label="Save title"
-                      title="Save title"
-                      disabled={renameSaving}
-                      onClick={() => void submitRename()}
-                    >
-                      {renameSaving ? (
-                        <Spinner className="text-sm" />
-                      ) : (
-                        <Check />
-                      )}
-                    </Button>
-                    <Button
-                      ghost
-                      size="icon"
-                      className="text-muted-foreground hover:text-foreground"
-                      aria-label="Cancel rename"
-                      title="Cancel rename"
-                      disabled={renameSaving}
-                      onClick={() => setRenaming(false)}
-                    >
-                      <X />
-                    </Button>
-                  </div>
-                ) : (
-                  <span
-                    className={`font-mondwest normal-case min-w-0 flex-1 truncate text-sm ${hasTitle ? "font-medium" : "text-muted-foreground italic"}`}
-                  >
-                    {hasTitle
-                      ? session.title
-                      : session.preview
-                        ? session.preview.slice(0, 60)
-                        : t.sessions.untitledSession}
-                  </span>
-                )}
-                {session.is_active && (
-                  <Badge tone="success" className="shrink-0 text-xs">
-                    <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
-                    {t.common.live}
-                  </Badge>
-                )}
-              </div>
-              <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
-                {session.model && (
-                  <>
-                    <span className="max-w-[min(100%,12rem)] truncate sm:max-w-[180px]">
-                      {session.model.split("/").pop()}
-                    </span>
-                    <span className="text-border">&#183;</span>
-                  </>
-                )}
-                <span className="shrink-0">
-                  {session.message_count} {t.common.msgs}
-                </span>
-                {session.tool_call_count > 0 && (
-                  <>
-                    <span className="text-border">&#183;</span>
-                    <span className="shrink-0">
-                      {session.tool_call_count} {t.common.tools}
-                    </span>
-                  </>
-                )}
-                <span className="text-border">&#183;</span>
-                <span className="shrink-0">{timeAgo(session.last_active)}</span>
-              </div>
-              {snippet && <SnippetHighlight snippet={snippet} />}
-            </div>
-
-            <div className="hidden shrink-0 items-center gap-2 sm:flex">
-              {actionButtons}
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2 sm:hidden">
-            {actionButtons}
-          </div>
-        </div>
-      </div>
-
-      {isExpanded && (
-        <div className="min-w-0 border-t border-border bg-background/50 p-4">
-          <div className="mb-3 flex flex-wrap items-center gap-2">
-            <Switch
-              id={liveTailId}
-              checked={liveTailEnabled}
-              onCheckedChange={toggleLiveTail}
-            />
-            <Label htmlFor={liveTailId} className="cursor-pointer text-xs">
-              {t.sessions.liveTail}
-            </Label>
-            {liveTailEnabled && (
-              <Badge tone="success" className="text-xs">
-                <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
-                {t.common.live}
-              </Badge>
-            )}
-            {liveTailEnabled && liveError && (
-              <span className="text-xs text-destructive">
-                {t.sessions.liveTailFailed}
-              </span>
-            )}
-          </div>
-          {messages === null && !error && (
-            <div className="flex items-center justify-center py-8">
-              <Spinner className="text-xl text-primary" />
-            </div>
-          )}
-          {error && (
-            <p className="text-sm text-destructive py-4 text-center">{error}</p>
-          )}
-          {messages && messages.length === 0 && (
-            <p className="text-sm text-muted-foreground py-4 text-center">
-              {t.sessions.noMessages}
-            </p>
-          )}
-          {messages && messages.length > 0 && (
-            <MessageList
-              messages={messages}
-              highlight={searchQuery}
-              follow={liveTailEnabled}
-            />
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
 type SessionsView = "list" | "overview";
 
 const PAGE_SIZE = 20;
+
+/** Dashboard breakpoint the sidebar/drawer split switches on (matches ChatPage). */
+const NARROW_MEDIA_QUERY = "(max-width: 1023px)";
 
 function SessionsPagination({
   className,
@@ -1082,11 +135,23 @@ export default function SessionsPage() {
   const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  // One switch for the whole page: only one row can be expanded at a time,
-  // and a user monitoring a conversation wants it to stay on as they move
-  // between rows. Default off — polling is opt-in.
+  // The session whose transcript fills the main pane. ``null`` means "no
+  // explicit pick yet" — the derived ``selectedSession`` below falls back to
+  // the first visible row so the pane is never empty while rows exist.
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
+    null,
+  );
+  // One switch for the whole pane: a user monitoring a conversation wants the
+  // live tail to stay on as they move between sessions. Default off —
+  // polling is opt-in.
   const [liveTail, setLiveTail] = useState(false);
+  // Mobile only: the session list lives in a bottom-sheet drawer below lg.
+  const [narrow, setNarrow] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      window.matchMedia(NARROW_MEDIA_QUERY).matches,
+  );
+  const [listDrawerOpen, setListDrawerOpen] = useState(false);
   const [searchResults, setSearchResults] = useState<
     SessionSearchResult[] | null
   >(null);
@@ -1306,6 +371,35 @@ export default function SessionsPage() {
     };
   }, [sourceMenuOpen]);
 
+  // Track the narrow breakpoint in JS as well as CSS: the session list is
+  // rendered once, either as the desktop sidebar or inside the mobile drawer,
+  // so only one search box / row set exists in the DOM at a time.
+  useEffect(() => {
+    const mql = window.matchMedia(NARROW_MEDIA_QUERY);
+    const sync = () => setNarrow(mql.matches);
+    sync();
+    mql.addEventListener("change", sync);
+    return () => mql.removeEventListener("change", sync);
+  }, []);
+
+  useEffect(() => {
+    const mql = window.matchMedia("(min-width: 1024px)");
+    const onChange = (event: MediaQueryListEvent) => {
+      if (event.matches) setListDrawerOpen(false);
+    };
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, []);
+
+  useEffect(() => {
+    if (!listDrawerOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setListDrawerOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [listDrawerOpen]);
+
   const loadSessions = useCallback((p: number, silent = false) => {
     // ``silent`` skips the loading spinner so background refreshes
     // (triggered when the overview poll detects a new session from
@@ -1482,7 +576,7 @@ export default function SessionsPage() {
       setSessionCategory(value as SessionFilterCategory);
       setSourceMenuOpen(false);
       setPage(0);
-      setExpandedId(null);
+      setSelectedSessionId(null);
       clearSelection();
     },
     [clearSelection],
@@ -1507,7 +601,7 @@ export default function SessionsPage() {
         };
       });
       setPage(0);
-      setExpandedId(null);
+      setSelectedSessionId(null);
       clearSelection();
     },
     [categoryDefaultSources, clearSelection, sessionCategory, sourceOptions],
@@ -1519,7 +613,7 @@ export default function SessionsPage() {
       [sessionCategory]: null,
     }));
     setPage(0);
-    setExpandedId(null);
+    setSelectedSessionId(null);
     clearSelection();
   }, [clearSelection, sessionCategory]);
 
@@ -1569,7 +663,7 @@ export default function SessionsPage() {
           await api.deleteSession(id, rowProfile(id));
           setSessions((prev) => prev.filter((s) => s.id !== id));
           setTotal((prev) => prev - 1);
-          if (expandedId === id) setExpandedId(null);
+          if (selectedSessionId === id) setSelectedSessionId(null);
           // Drop the deleted ID from any active bulk-select set — it
           // can't bulk-delete a row that's already gone.
           setSelectedIds((prev) => {
@@ -1590,7 +684,7 @@ export default function SessionsPage() {
         }
       },
       [
-        expandedId,
+        selectedSessionId,
         refreshEmptyCount,
         rowProfile,
         showToast,
@@ -1684,7 +778,9 @@ export default function SessionsPage() {
       const deletedSet = new Set(ids);
       setSessions((prev) => prev.filter((s) => !deletedSet.has(s.id)));
       setTotal((prev) => Math.max(0, prev - resp.deleted));
-      if (expandedId && deletedSet.has(expandedId)) setExpandedId(null);
+      if (selectedSessionId && deletedSet.has(selectedSessionId)) {
+        setSelectedSessionId(null);
+      }
       clearSelection();
       loadSessions(page);
       refreshEmptyCount();
@@ -1695,7 +791,7 @@ export default function SessionsPage() {
     }
   }, [
     clearSelection,
-    expandedId,
+    selectedSessionId,
     loadSessions,
     page,
     refreshEmptyCount,
@@ -1838,6 +934,26 @@ export default function SessionsPage() {
   const showList = view === "list" || isSearching || !showOverviewTab;
   const showPagination = showList && !isSearching && total > PAGE_SIZE;
 
+  // The session whose transcript is on screen. An explicit pick wins while it
+  // is still in the visible list; otherwise the first visible row stands in,
+  // so the main pane is never blank while sessions exist. Derived rather than
+  // synced through an effect: no extra render, and no stale selection to clean
+  // up when the list is reloaded, filtered or paged.
+  const selectedSession = useMemo(() => {
+    if (!showList || filtered.length === 0) return null;
+    return filtered.find((s) => s.id === selectedSessionId) ?? filtered[0];
+  }, [filtered, selectedSessionId, showList]);
+
+  const emptyListMessage = search
+    ? t.sessions.noMatch
+    : selectedSources !== null || sessionCategory !== "chats"
+      ? t.sessions.noSessionsInFilter
+      : t.sessions.noSessions;
+  const emptyListHint =
+    !search && sessionCategory === "chats" && selectedSources === null
+      ? t.sessions.startConversation
+      : undefined;
+
   const alerts: { message: string; detail?: string }[] = [];
   if (status) {
     if (status.gateway_state === "startup_failed") {
@@ -1861,6 +977,105 @@ export default function SessionsPage() {
     }
   }
 
+  const selectionBar =
+    selectedIds.size > 0 ? (
+      <div
+        className="flex flex-wrap items-center gap-2 border-b border-primary/30 bg-primary/[0.06] px-2 py-2"
+        role="region"
+        aria-label={t.sessions.selectedCount.replace(
+          "{count}",
+          String(selectedIds.size),
+        )}
+      >
+        <span className="font-mondwest normal-case text-xs text-primary tabular-nums">
+          {t.sessions.selectedCount.replace("{count}", String(selectedIds.size))}
+        </span>
+        {filtered.some((s) => !selectedIds.has(s.id)) && (
+          <Button
+            ghost
+            size="xs"
+            onClick={() => selectAllOnPage(filtered)}
+            aria-label={t.sessions.selectAllOnPage}
+            title={t.sessions.selectAllOnPage}
+          >
+            <span className="font-mondwest normal-case text-xs">
+              {t.sessions.selectAllOnPage}
+            </span>
+          </Button>
+        )}
+        <Button
+          ghost
+          size="xs"
+          onClick={clearSelection}
+          aria-label={t.sessions.clearSelection}
+          title={t.sessions.clearSelection}
+        >
+          <span className="font-mondwest normal-case text-xs">
+            {t.sessions.clearSelection}
+          </span>
+        </Button>
+        <Button
+          outlined
+          destructive
+          size="xs"
+          className="ml-auto"
+          onClick={() => setDeleteSelectedOpen(true)}
+          aria-label={t.sessions.deleteSelected.replace(
+            "{count}",
+            String(selectedIds.size),
+          )}
+          title={t.sessions.deleteSelected.replace(
+            "{count}",
+            String(selectedIds.size),
+          )}
+          prefix={<Trash2 />}
+        >
+          <span className="font-mondwest normal-case text-xs">
+            {t.sessions.deleteSelected.replace(
+              "{count}",
+              String(selectedIds.size),
+            )}
+          </span>
+        </Button>
+      </div>
+    ) : null;
+
+  const listPanel = (className: string, footer?: ReactNode) => (
+    <SessionListPanel
+      activeId={selectedSession?.id ?? null}
+      className={className}
+      emptyMessage={emptyListMessage}
+      emptyHint={emptyListHint}
+      footer={footer}
+      onDelete={(id) => sessionDelete.requestDelete(id)}
+      onExport={handleExport}
+      onRename={handleRename}
+      onRowCheckClick={handleSelectClick}
+      onSearchChange={updateSearch}
+      onSelect={(id) => {
+        setSelectedSessionId(id);
+        setListDrawerOpen(false);
+      }}
+      resumeInChatEnabled={resumeInChatEnabled}
+      search={search}
+      searching={searching}
+      selectionBar={selectionBar}
+      selectedIds={selectedIds}
+      sessions={filtered}
+      snippetMap={snippetMap}
+    />
+  );
+
+  const drawerPagination =
+    total > PAGE_SIZE ? (
+      <SessionsPagination
+        compact
+        page={page}
+        total={total}
+        onPageChange={goToPage}
+      />
+    ) : undefined;
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -1870,7 +1085,7 @@ export default function SessionsPage() {
   }
 
   return (
-    <div className="flex min-w-0 w-full max-w-full flex-col gap-4">
+    <div className="flex min-h-0 min-w-0 w-full max-w-full flex-1 flex-col gap-4">
       <PluginSlot name="sessions:top" />
       <Toast toast={toast} />
       <input
@@ -2158,9 +1373,8 @@ export default function SessionsPage() {
                     ) : (
                       sourceOptions.map(([source, count]) => {
                         const selected = selectedSourceSet.has(source);
-                        const SourceIcon = SOURCE_CONFIG[source]?.icon ?? Terminal;
-                        const sourceColor =
-                          SOURCE_CONFIG[source]?.color ?? "text-muted-foreground";
+                        const visual = sourceVisual(source);
+                        const SourceIcon = visual.icon;
 
                         return (
                           <div
@@ -2180,7 +1394,7 @@ export default function SessionsPage() {
                               className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs"
                               onClick={() => toggleSourceFilter(source)}
                             >
-                              <SourceIcon className={`h-3.5 w-3.5 shrink-0 ${sourceColor}`} />
+                              <SourceIcon className={`h-3.5 w-3.5 shrink-0 ${visual.color}`} />
                               <span className="min-w-0 flex-1 truncate">
                                 {sourceLabel(source)}
                               </span>
@@ -2210,33 +1424,6 @@ export default function SessionsPage() {
               />
             )}
 
-            {showList && (
-              <div className="relative min-w-0 w-full sm:w-auto sm:min-w-[12rem] sm:max-w-md sm:flex-1">
-                {searching ? (
-                  <Spinner className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[0.875rem] text-primary" />
-                ) : (
-                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-                )}
-                <Input
-                  placeholder={t.sessions.searchPlaceholder}
-                  value={search}
-                  onChange={(e) => updateSearch(e.target.value)}
-                  className="h-8 py-0 pr-7 pl-8 text-xs leading-none"
-                />
-                {search && (
-                  <Button
-                    ghost
-                    size="xs"
-                    className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                    onClick={() => updateSearch("")}
-                    aria-label={t.common.clear}
-                  >
-                    <X />
-                  </Button>
-                )}
-              </div>
-            )}
-
             {showList && emptyCount > 0 && !isSearching && (
               <Button
                 outlined
@@ -2254,7 +1441,7 @@ export default function SessionsPage() {
               </Button>
             )}
 
-            {!isSearching && (
+            {showList && !isSearching && (
               <Button
                 outlined
                 size="sm"
@@ -2272,7 +1459,7 @@ export default function SessionsPage() {
             )}
           </div>
 
-          {showPagination && (
+          {showPagination && !narrow && (
             <SessionsPagination
               compact
               className="shrink-0 sm:ml-auto"
@@ -2284,125 +1471,56 @@ export default function SessionsPage() {
         </div>
       ) : null}
 
-      {showList && selectedIds.size > 0 && (
-        <div
-          className="flex flex-wrap items-center gap-2 border border-primary/30 bg-primary/[0.06] px-3 py-2"
-          role="region"
-          aria-label={t.sessions.selectedCount.replace(
-            "{count}",
-            String(selectedIds.size),
-          )}
-        >
-          <span className="font-mondwest normal-case text-xs text-primary tabular-nums">
-            {t.sessions.selectedCount.replace(
-              "{count}",
-              String(selectedIds.size),
-            )}
-          </span>
-          {filtered.some((s) => !selectedIds.has(s.id)) && (
-            <Button
-              ghost
-              size="sm"
-              onClick={() => selectAllOnPage(filtered)}
-              aria-label={t.sessions.selectAllOnPage}
-              title={t.sessions.selectAllOnPage}
-            >
-              <span className="font-mondwest normal-case text-xs">
-                {t.sessions.selectAllOnPage}
-              </span>
-            </Button>
-          )}
-          <Button
-            ghost
-            size="sm"
-            onClick={clearSelection}
-            aria-label={t.sessions.clearSelection}
-            title={t.sessions.clearSelection}
-          >
-            <span className="font-mondwest normal-case text-xs">
-              {t.sessions.clearSelection}
-            </span>
-          </Button>
-          <Button
-            outlined
-            destructive
-            size="sm"
-            className="ml-auto"
-            onClick={() => setDeleteSelectedOpen(true)}
-            aria-label={t.sessions.deleteSelected.replace(
-              "{count}",
-              String(selectedIds.size),
-            )}
-            title={t.sessions.deleteSelected.replace(
-              "{count}",
-              String(selectedIds.size),
-            )}
-            prefix={<Trash2 />}
-          >
-            <span className="font-mondwest normal-case text-xs">
-              {t.sessions.deleteSelected.replace(
-                "{count}",
-                String(selectedIds.size),
-              )}
-            </span>
-          </Button>
-        </div>
-      )}
-
       {showList ? (
-        filtered.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
-            <Clock className="h-8 w-8 mb-3 opacity-40" />
-            <p className="text-sm font-medium">
-              {search
-                ? t.sessions.noMatch
-                : selectedSources !== null || sessionCategory !== "chats"
-                  ? t.sessions.noSessionsInFilter
-                  : t.sessions.noSessions}
-            </p>
-            {!search && sessionCategory === "chats" && selectedSources === null && (
-              <p className="text-xs mt-1 text-text-tertiary">
-                {t.sessions.startConversation}
-              </p>
-            )}
-          </div>
-        ) : (
-          <>
-            <div className="flex min-w-0 flex-col gap-1.5">
-              {filtered.map((s, index) => (
-                <SessionRow
-                  key={s.id}
-                  session={s}
-                  snippet={snippetMap.get(s.id)}
-                  searchQuery={search || undefined}
-                  isExpanded={expandedId === s.id}
-                  isSelected={selectedIds.has(s.id)}
-                  onToggle={() =>
-                    setExpandedId((prev) => (prev === s.id ? null : s.id))
-                  }
-                  onSelectClick={(event) =>
-                    handleSelectClick(event, index, filtered)
-                  }
-                  onDelete={() => sessionDelete.requestDelete(s.id)}
-                  onRename={handleRename}
-                  onExport={handleExport}
-                  resumeInChatEnabled={resumeInChatEnabled}
-                  liveTailEnabled={liveTail}
-                  onToggleLiveTail={setLiveTail}
-                  onLiveChange={refreshListSilently}
-                />
-              ))}
-            </div>
-
-            {showPagination && (
-              <SessionsPagination
-                page={page}
-                total={total}
-                onPageChange={goToPage}
+        <>
+          {/* Master-detail. Below lg the main pane owns the screen and the list
+              moves into the drawer; from lg up both panes sit side by side with
+              the list as a fixed right-hand rail. */}
+          <div className="flex min-h-[60dvh] w-full min-w-0 flex-col gap-3 lg:min-h-0 lg:flex-1 lg:flex-row lg:gap-4">
+            {selectedSession ? (
+              <SessionTranscriptPane
+                key={selectedSession.id}
+                session={selectedSession}
+                liveTailEnabled={liveTail}
+                onToggleLiveTail={setLiveTail}
+                onLiveChange={refreshListSilently}
+                highlight={search || undefined}
+                onOpenList={
+                  narrow ? () => setListDrawerOpen(true) : undefined
+                }
+                listOpen={listDrawerOpen}
               />
+            ) : (
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center border border-border bg-background-base/40 p-8 text-center text-muted-foreground">
+                <MessageSquare className="mb-3 h-8 w-8 opacity-40" />
+                <p className="text-sm font-medium">
+                  {t.sessions.selectSessionPrompt}
+                </p>
+              </div>
             )}
-          </>
-        )
+
+            {!narrow &&
+              listPanel(
+                "hidden lg:flex lg:w-72 lg:shrink-0 xl:w-80 2xl:w-96",
+              )}
+          </div>
+
+          {narrow && (
+            <BottomSheet
+              open={listDrawerOpen}
+              onClose={() => setListDrawerOpen(false)}
+              title={t.sessions.sessionList}
+              backdropDismissLabel={t.common.close}
+            >
+              <div id="sessions-list-panel" className="px-3 pt-3">
+                {listPanel(
+                  "h-[65dvh] flex-none border-0 bg-transparent",
+                  drawerPagination,
+                )}
+              </div>
+            </BottomSheet>
+          )}
+        </>
       ) : (
         <div className="flex min-w-0 flex-col gap-4">
           {platformEntries.length > 0 && status && (
@@ -2474,25 +1592,6 @@ export default function SessionsPage() {
       <PluginSlot name="sessions:bottom" />
     </div>
   );
-}
-
-interface SessionRowProps {
-  isExpanded: boolean;
-  isSelected: boolean;
-  /** Auto-refresh the expanded transcript from the read-only sessions API. */
-  liveTailEnabled: boolean;
-  onToggleLiveTail: (enabled: boolean) => void;
-  /** The transcript changed during a live poll (row counters are stale). */
-  onLiveChange: () => void;
-  onDelete: () => void;
-  onExport: (id: string) => void;
-  onRename: (id: string, title: string) => Promise<void>;
-  onSelectClick: (event: React.MouseEvent) => void;
-  onToggle: () => void;
-  resumeInChatEnabled: boolean;
-  searchQuery?: string;
-  session: SessionInfo;
-  snippet?: string;
 }
 
 interface SessionsPaginationProps {
