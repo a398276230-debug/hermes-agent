@@ -26,11 +26,12 @@ Both are configured through a single backend selection. Providers are chosen via
 | **Parallel** | `PARALLEL_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · paid with key |
 | **Tavily** | `TAVILY_API_KEY` (optional) | ✔ | ✔ | ✔ Opt-in keyless when selected |
 | **Perplexity** | `PERPLEXITY_API_KEY` | ✔ | ✔ (query-relevant snippets) | Paid (per-request Search API pricing) |
+| **Linkup** | `LINKUP_API_KEY` | ✔ | ✔ | 4 000 free queries, then pay-as-you-go |
 | **Keenable** | `KEENABLE_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · paid with key |
 | **xAI (Grok)** | `XAI_API_KEY` or `hermes auth add xai-oauth` | ✔ | — | Paid (SuperGrok or per-token) |
 | **OpenAI Native (Codex)** | `hermes auth add openai-codex` | ✔ | — | Requires a ChatGPT/Codex subscription |
 
-Brave Search, DDGS, xAI, and OpenAI Native are **search-only** — pair any of them with Firecrawl/Tavily/Perplexity/Keenable/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below). OpenAI Native declares the same kind of provider-executed tool on the Codex Responses endpoint (see [below](#openai-native)).
+Brave Search, DDGS, xAI, and OpenAI Native are **search-only** — pair any of them with Firecrawl/Tavily/Perplexity/Keenable/Exa/Parallel/Linkup when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below). OpenAI Native declares the same kind of provider-executed tool on the Codex Responses endpoint (see [below](#openai-native)).
 
 **Per-capability split:** you can use different providers for search and extract independently — for example SearXNG (free) for search and Firecrawl for extract. See [Per-capability configuration](#per-capability-configuration) below.
 
@@ -328,6 +329,31 @@ PARALLEL_API_KEY=your-parallel-key-here
 ```
 
 Get access at [parallel.ai](https://parallel.ai).
+
+---
+
+### Linkup
+
+Agentic web search and clean page extraction from Linkup's API. `web_search` runs Linkup's search and `web_extract` fetches each URL's markdown content.
+
+```bash
+# ~/.hermes/.env
+LINKUP_API_KEY=your-linkup-key-here
+```
+
+Get a key at [app.linkup.so](https://app.linkup.so/) — the free tier covers 4,000 queries, after which it is pay-as-you-go. Set `LINKUP_BASE_URL` (default `https://api.linkup.so/v1`) to route through a proxy.
+
+Search depth and domain filters live in `config.yaml` (env fallbacks in parentheses):
+
+```yaml
+web:
+  linkup:
+    depth: deep                          # flash | fast | standard (default) | deep   (LINKUP_DEPTH)
+    include_domains: [docs.python.org]   # list or "a.com, b.com"  (LINKUP_INCLUDE_DOMAINS)
+    exclude_domains: "spam.example.com"  # list or "a.com, b.com"  (LINKUP_EXCLUDE_DOMAINS)
+```
+
+`site:example.com` and `-site:example.com` in a query are lifted into these domain lists and stripped from the search text, since Linkup has no native site operator.
 
 ---
 

@@ -37,6 +37,8 @@ def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "KEENABLE_API_KEY",
         "TAVILY_API_KEY",
         "TAVILY_BASE_URL",
+        "LINKUP_API_KEY",
+        "LINKUP_BASE_URL",
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
         "PARALLEL_SEARCH_MODE",
@@ -82,6 +84,7 @@ class TestBundledPluginsRegister:
             "exa",
             "firecrawl",
             "keenable",
+            "linkup",
             "openai-native",
             "parallel",
             "perplexity",
@@ -102,6 +105,7 @@ class TestBundledPluginsRegister:
             ("tavily", True, True),
             ("perplexity", True, True),
             ("firecrawl", True, True),
+            ("linkup", True, True),
             # xai: search-only via Grok's agentic web_search tool.
             ("xai", True, False),
             # openai-native: marker for the Codex Responses server-side web_search swap;
@@ -125,7 +129,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "perplexity", "firecrawl", "keenable", "xai", "openai-native"],
+        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "perplexity", "firecrawl", "keenable", "linkup", "xai", "openai-native"],
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -183,6 +187,16 @@ class TestIsAvailable:
         assert p is not None
         assert p.is_available() is False
         monkeypatch.setenv("TAVILY_API_KEY", "real")
+        assert p.is_available() is True
+
+    def test_linkup_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("linkup")
+        assert p is not None
+        assert p.is_available() is False
+        monkeypatch.setenv("LINKUP_API_KEY", "real")
         assert p.is_available() is True
 
     def test_exa_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:

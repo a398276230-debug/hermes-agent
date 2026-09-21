@@ -158,6 +158,11 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `TAVILY_BASE_URL` | Override the Tavily API endpoint. Useful for corporate proxies and self-hosted Tavily-compatible search backends. Same pattern as `GROQ_BASE_URL`. |
 | `PERPLEXITY_API_KEY` | Perplexity Search API key for the `perplexity` web backend — ranked search results plus query-relevant page snippets for extract ([perplexity.ai/account/api](https://www.perplexity.ai/account/api)) |
 | `PERPLEXITY_BASE_URL` | Override the Perplexity API endpoint (default `https://api.perplexity.ai`) for proxies (optional) |
+| `LINKUP_API_KEY` | Linkup API key for web search and page fetch ([app.linkup.so](https://app.linkup.so/)) |
+| `LINKUP_BASE_URL` | Override the Linkup API endpoint (default `https://api.linkup.so/v1`) for proxies (optional) |
+| `LINKUP_DEPTH` | Linkup search depth — `flash`, `fast`, `standard` (default), or `deep`. Prefer `web.linkup.depth` in `config.yaml`. |
+| `LINKUP_INCLUDE_DOMAINS` | Comma-separated domains to restrict Linkup results to. Prefer `web.linkup.include_domains` in `config.yaml`. |
+| `LINKUP_EXCLUDE_DOMAINS` | Comma-separated domains to exclude from Linkup results. Prefer `web.linkup.exclude_domains` in `config.yaml`. |
 | `SEARXNG_URL` | SearXNG instance URL for free self-hosted web search — no API key required ([searxng.github.io](https://searxng.github.io/searxng/)) |
 | `EXA_API_KEY` | Exa API key for AI-native web search and contents ([exa.ai](https://exa.ai/)) |
 | `BRAVE_SEARCH_API_KEY` | Brave Search API subscription token for web search (free tier available) ([brave.com/search/api](https://brave.com/search/api/)) |

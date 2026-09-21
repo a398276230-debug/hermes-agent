@@ -396,6 +396,11 @@ DEFAULT_CONFIG = {
         # preview builds). Entries match exactly, as "*.wildcard", or as a domain suffix
         # ("mysite.dev" also covers "preview.mysite.dev"). localhost/private IPs always exempt.
         "cache_exempt_hosts": [],
+        # Vendor knobs for the bundled Linkup provider (web/linkup): search `depth`
+        # (flash|fast|standard|deep) and `include_domains` / `exclude_domains` allow/deny lists.
+        # Free-form so future Linkup-only settings need no schema change; env fallbacks are
+        # LINKUP_DEPTH / LINKUP_INCLUDE_DOMAINS / LINKUP_EXCLUDE_DOMAINS.
+        "linkup": {},
     },
 
     "browser": {
@@ -2785,6 +2790,9 @@ OPTIONAL_ENV_VARS = {
         "Keenable API key for fast independent-index web search and page fetch (optional — "
         "keyless free tier works without it)", "Keenable API key", "https://keenable.ai",
         tools=["web_search", "web_extract"]),
+    "LINKUP_API_KEY": _tool(
+        "Linkup API key for web search and page fetch (4,000 free queries)",
+        "Linkup API key", "https://app.linkup.so/", tools=["web_search", "web_extract"]),
     "SEARXNG_URL": _tool("URL of your SearXNG instance for free self-hosted web search",
         "SearXNG URL (e.g. http://localhost:8080)", "https://searxng.github.io/searxng/",
         tools=["web_search"], password=False),
