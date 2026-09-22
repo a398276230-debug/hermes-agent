@@ -552,3 +552,30 @@ describe("SessionsPage mobile session drawer", () => {
     await waitFor(() => document.body.textContent?.includes("body of sid-second") === true);
   });
 });
+
+// A phone in History has one job: read the transcript. The store-wide stats
+// strip is reference data, so below lg it must not spend a row of the height
+// the transcript pane needs — while desktop and the Overview tab keep it.
+describe("SessionsPage narrow-screen transcript height", () => {
+  const row = sessionRow("sid-height", "default", { title: "Height" });
+  const transcriptViewport = () =>
+    document.querySelector('[data-testid="session-transcript-viewport"]');
+
+  beforeEach(() => {
+    apiMocks.getSessionMessages.mockResolvedValue({
+      messages: [{ role: "system", content: "body", timestamp: 1 }],
+    });
+  });
+
+  it("keeps the store-stats strip on desktop", async () => {
+    await renderSessionsPage([row]);
+    expect(document.body.textContent).toContain("Active in store");
+  });
+
+  it("drops the store-stats strip on a phone so the transcript owns the viewport", async () => {
+    stubNarrowViewport();
+    await renderSessionsPage([row], { rowActionsVisible: false });
+    await waitFor(() => transcriptViewport() !== null);
+    expect(document.body.textContent).not.toContain("Active in store");
+  });
+});

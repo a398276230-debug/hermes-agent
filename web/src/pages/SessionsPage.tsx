@@ -1092,7 +1092,7 @@ export default function SessionsPage() {
        `overflow-y-auto` is the escape hatch for a short viewport where the
        chrome above the row (stats, alerts, toolbar) would leave the row less
        than `min-h` — then the page scrolls instead of clipping. */
-    <div className="flex min-h-0 min-w-0 w-full max-w-full flex-1 flex-col gap-4 overflow-x-hidden overflow-y-auto">
+    <div className="flex min-h-0 min-w-0 w-full max-w-full flex-1 flex-col gap-3 overflow-x-hidden overflow-y-auto lg:gap-4">
       <PluginSlot name="sessions:top" />
       <Toast toast={toast} />
       <input
@@ -1197,7 +1197,12 @@ export default function SessionsPage() {
         </DialogContent>
       </Dialog>
 
-      {stats && (
+      {/* Store-wide counters are reference data, not the task at hand. On a
+          phone in History the transcript pane is the whole point of the page,
+          so the strip stands down and the card keeps its height; it stays on
+          desktop everywhere and on a phone in Overview, where the store
+          summary is the subject. */}
+      {stats && !(narrow && showList) && (
         <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border border-border bg-background-base/40 px-4 py-3">
           <div className="flex flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none">
@@ -1321,11 +1326,11 @@ export default function SessionsPage() {
       )}
 
       {(showOverviewTab && !isSearching) || showList ? (
-        <div className="flex w-full min-w-0 flex-wrap items-center gap-2 sm:gap-3">
+        <div className="flex w-full min-w-0 flex-wrap items-center gap-1.5 sm:gap-3">
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:gap-3">
             <Segmented
               className="w-fit shrink-0"
-              size="md"
+              size={narrow ? "sm" : "md"}
               value={sessionCategory}
               onChange={updateSessionCategory}
               options={[
@@ -1345,7 +1350,7 @@ export default function SessionsPage() {
                     className={`transition-transform ${sourceMenuOpen ? "rotate-180" : ""}`}
                   />
                 }
-                className="h-8 min-w-[10rem] max-w-[14rem] justify-between text-xs"
+                className="h-7 min-w-[10rem] max-w-[14rem] justify-between text-xs lg:h-8"
                 aria-label={t.sessions.sourceFilter}
                 aria-expanded={sourceMenuOpen}
                 onClick={() => setSourceMenuOpen((open) => !open)}
@@ -1421,7 +1426,7 @@ export default function SessionsPage() {
             {showOverviewTab && !isSearching && (
               <Segmented
                 className="w-fit shrink-0"
-                size="md"
+                size={narrow ? "sm" : "md"}
                 value={view}
                 onChange={switchView}
                 options={[
@@ -1533,7 +1538,7 @@ export default function SessionsPage() {
           )}
         </>
       ) : (
-        <div className="flex min-w-0 flex-col gap-4">
+        <div className="flex min-w-0 flex-col gap-4 pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-0">
           {platformEntries.length > 0 && status && (
             <PlatformsCard platforms={platformEntries} />
           )}

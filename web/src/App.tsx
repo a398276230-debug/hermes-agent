@@ -774,8 +774,16 @@ export default function App() {
               <div
                 className={cn(
                   "w-full min-w-0",
+                  // A viewport-locked route (chat, sessions) is a workspace
+                  // whose bounded pane reaches the bottom edge of the screen:
+                  // below lg the session transcript card IS the page, so only
+                  // the home-indicator inset is reserved and every other
+                  // pixel goes to the message viewport. Ordinary scrolling
+                  // pages keep their full bottom breather.
                   !isChatRoute &&
-                    "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
+                    (isViewportLockedRoute
+                      ? "pb-[env(safe-area-inset-bottom,0px)] lg:pb-8"
+                      : "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8"),
                   (isDocsRoute || isViewportLockedRoute) &&
                     "min-h-0 flex flex-1 flex-col",
                 )}
