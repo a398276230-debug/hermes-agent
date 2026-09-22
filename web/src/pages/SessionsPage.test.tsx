@@ -82,7 +82,18 @@ function stubNarrowViewport() {
 
 async function renderSessionsPage(
   rows: Record<string, unknown>[],
-  { rowActionsVisible = true } = {},
+  {
+    rowActionsVisible = true,
+    ready,
+    shell,
+  }: {
+    rowActionsVisible?: boolean;
+    /** Wait for this before handing the tree to the test (empty lists have no
+     *  rows and no pane to wait for). */
+    ready?: () => boolean;
+    /** Supply the app frame's shell value; omit to exercise the no-op default. */
+    shell?: { immersive: boolean; setImmersive: (v: boolean) => void; openNavigation: () => void };
+  } = {},
 ) {
   // Page list uses limit 20; the overview tab's recent-cards fetch uses 50 —
   // keep the overview empty so the list view (with row actions) renders.
@@ -92,33 +103,43 @@ async function renderSessionsPage(
     limit,
     offset: 0,
   }));
-  const [{ default: SessionsPage }, { I18nProvider }, { SystemActionsProvider }, { ProfileProvider }, { PageHeaderProvider }] =
+  const [{ default: SessionsPage }, { I18nProvider }, { SystemActionsProvider }, { ProfileProvider }, { PageHeaderProvider }, { AppShellContext }] =
     await Promise.all([
       import("./SessionsPage"),
       import("@/i18n"),
       import("@/contexts/SystemActions"),
       import("@/contexts/ProfileProvider"),
       import("@/contexts/PageHeaderProvider"),
+      import("@/contexts/app-shell-context"),
     ]);
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
+  const page = (
+    <PageHeaderProvider pluginTabs={[]}>
+      <SessionsPage />
+    </PageHeaderProvider>
+  );
   await act(async () =>
     root.render(
       <I18nProvider>
         <MemoryRouter>
           <SystemActionsProvider>
             <ProfileProvider>
-              <PageHeaderProvider pluginTabs={[]}>
-                <SessionsPage />
-              </PageHeaderProvider>
+              {shell ? (
+                <AppShellContext.Provider value={shell}>{page}</AppShellContext.Provider>
+              ) : (
+                page
+              )}
             </ProfileProvider>
           </SystemActionsProvider>
         </MemoryRouter>
       </I18nProvider>,
     ),
   );
-  if (rowActionsVisible) {
+  if (ready) {
+    await waitFor(ready);
+  } else if (rowActionsVisible) {
     await waitFor(() => Boolean(button("Delete session")));
   } else {
     // Below lg the rows live in the drawer, which starts closed.
@@ -550,6 +571,88 @@ describe("SessionsPage mobile session drawer", () => {
     );
     await waitFor(() => document.getElementById("sessions-list-panel") === null);
     await waitFor(() => document.body.textContent?.includes("body of sid-second") === true);
+  });
+});
+
+// On a phone the transcript pane IS the page: the app frame and the page
+// header stand down, and the list-level controls move into the session drawer
+// the pane's own button opens. Nothing is dropped, it is one tap away — and
+// the takeover has to be handed back when the page stops owning the viewport,
+// or every other page would lose its header.
+describe("SessionsPage phone immersive transcript", () => {
+  const row = sessionRow("sid-immersive", "default", { title: "Immersive" });
+  const chatsSegment = () =>
+    Array.from(document.querySelectorAll("button")).find(
+      (b) => b.textContent?.trim() === "Chats",
+    ) ?? null;
+
+  function shell() {
+    const setImmersive = vi.fn();
+    return {
+      setImmersive,
+      value: {
+        immersive: false,
+        setImmersive,
+        openNavigation: vi.fn(),
+      },
+    };
+  }
+
+  beforeEach(() => {
+    apiMocks.getSessionMessages.mockResolvedValue({
+      messages: [{ role: "system", content: "body", timestamp: 1 }],
+    });
+  });
+
+  it("asks the app frame for the viewport and keeps the list controls in the drawer", async () => {
+    stubNarrowViewport();
+    const { setImmersive, value } = shell();
+    await renderSessionsPage([row], { rowActionsVisible: false, shell: value });
+    await waitFor(() => Boolean(button("Session list")));
+
+    // The pane took the viewport...
+    await waitFor(() => setImmersive.mock.calls.some(([on]) => on === true));
+    // ...which means the toolbar is not spending a row above the transcript,
+    // here replaced by the pane's own header carrying the navigation opener.
+    expect(chatsSegment()).toBeNull();
+    expect(button("Open navigation")).not.toBeNull();
+
+    // It is not lost: the session drawer holds it.
+    await act(async () => click(button("Session list")));
+    await waitFor(() => Boolean(chatsSegment()));
+    expect(document.body.textContent).toContain("Import sessions");
+  });
+
+  it("keeps the toolbar on the page while there is no session to own it", async () => {
+    stubNarrowViewport();
+    const { setImmersive, value } = shell();
+    // An empty list renders the placeholder instead of the pane — and with it
+    // no session-list button, so the toolbar must stay reachable on the page.
+    await renderSessionsPage([], {
+      ready: () => Boolean(chatsSegment()),
+      shell: value,
+    });
+    expect(setImmersive.mock.calls).toContainEqual([false]);
+    expect(setImmersive.mock.calls).not.toContainEqual([true]);
+    expect(button("Open navigation")).toBeNull();
+  });
+
+  it("gives the app frame back when the page unmounts", async () => {
+    stubNarrowViewport();
+    const { setImmersive, value } = shell();
+    await renderSessionsPage([row], { rowActionsVisible: false, shell: value });
+    await waitFor(() => setImmersive.mock.calls.some(([on]) => on === true));
+
+    await act(async () => root.unmount());
+    expect(setImmersive).toHaveBeenLastCalledWith(false);
+  });
+
+  it("leaves the desktop pane free of the phone top bar", async () => {
+    const { value } = shell();
+    await renderSessionsPage([row], { shell: value });
+    await waitFor(() => Boolean(button("Delete session")));
+    expect(button("Open navigation")).toBeNull();
+    expect(button("Session list")).toBeNull();
   });
 });
 

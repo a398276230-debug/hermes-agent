@@ -43,7 +43,7 @@ import type {
   SessionStoreStats,
   StatusResponse,
 } from "@/lib/api";
-import { timeAgo } from "@/lib/utils";
+import { cn, timeAgo } from "@/lib/utils";
 import { PlatformsCard } from "@/components/PlatformsCard";
 import { SessionListPanel } from "@/components/SessionListPanel";
 import { SessionTranscriptPane } from "@/components/SessionTranscriptPane";
@@ -70,6 +70,7 @@ import { useSystemActions } from "@/contexts/useSystemActions";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { useAppShell } from "@/contexts/useAppShell";
 import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { apiErrorFromResponse, errorMessage } from "@/lib/api-error";
@@ -206,6 +207,7 @@ export default function SessionsPage() {
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
   const { activeAction, actionStatus, dismissLog } = useSystemActions();
+  const { setImmersive, openNavigation } = useAppShell();
   const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
   const selectedSources = sourceSelectionsByCategory[sessionCategory];
 
@@ -944,6 +946,28 @@ export default function SessionsPage() {
     return filtered.find((s) => s.id === selectedSessionId) ?? filtered[0];
   }, [filtered, selectedSessionId, showList]);
 
+  /**
+   * Whether the transcript pane owns the whole phone viewport.
+   *
+   * Below lg the master-detail row is one column, so the page header, the
+   * profile banner row and the list toolbar were stacking three bars above a
+   * transcript that had barely half the screen left. While a session is on
+   * screen the pane becomes the page: `App.tsx` drops the app header, the
+   * `PageHeaderProvider` bar stands down, the toolbar moves into the session
+   * drawer (opened from the pane's own button) and the pane header carries the
+   * navigation hamburger instead. Desktop keeps the full frame — the flag only
+   * ever hides chrome inside a `max-lg:` variant.
+   *
+   * Requires a selected session on purpose: with an empty list the pane (and
+   * with it the only way back to the toolbar) does not render at all.
+   */
+  const transcriptOwnsViewport = narrow && showList && selectedSession !== null;
+
+  useEffect(() => {
+    setImmersive(transcriptOwnsViewport);
+    return () => setImmersive(false);
+  }, [setImmersive, transcriptOwnsViewport]);
+
   const emptyListMessage = search
     ? t.sessions.noMatch
     : selectedSources !== null || sessionCategory !== "chats"
@@ -1075,6 +1099,169 @@ export default function SessionsPage() {
         onPageChange={goToPage}
       />
     ) : undefined;
+
+  // The list-level controls: category segments, source filter, view switch,
+  // bulk delete, import. Below lg they move into the session drawer — the
+  // transcript owns the viewport, so the chrome that used to stack above it
+  // lives in the sheet the pane's session-list button opens instead.
+  const listToolbar =
+    (showOverviewTab && !isSearching) || showList ? (
+      <div className="flex w-full min-w-0 flex-wrap items-center gap-1.5 sm:gap-3">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:gap-3">
+          <Segmented
+            className="w-fit shrink-0"
+            size={narrow ? "sm" : "md"}
+            value={sessionCategory}
+            onChange={updateSessionCategory}
+            options={[
+              { value: "chats", label: t.sessions.filterChats },
+              { value: "automation", label: t.sessions.filterAutomation },
+              { value: "all", label: t.sessions.filterAll },
+            ]}
+          />
+
+          <div ref={sourceMenuRef} className="relative shrink-0">
+            <Button
+              outlined
+              size="sm"
+              prefix={<ListFilter />}
+              suffix={
+                <ChevronDown
+                  className={`transition-transform ${sourceMenuOpen ? "rotate-180" : ""}`}
+                />
+              }
+              className="h-7 min-w-[10rem] max-w-[14rem] justify-between text-xs lg:h-8"
+              aria-label={t.sessions.sourceFilter}
+              aria-expanded={sourceMenuOpen}
+              onClick={() => setSourceMenuOpen((open) => !open)}
+            >
+              <span className="min-w-0 truncate">{sourceFilterLabel}</span>
+            </Button>
+
+            {sourceMenuOpen && (
+              <div
+                className="absolute left-0 top-full z-30 mt-1 w-[18rem] max-w-[calc(100vw-2rem)] border border-border bg-background-base shadow-lg"
+              >
+                <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-1.5">
+                  <span className="min-w-0 truncate text-xs text-muted-foreground">
+                    {sourceMenuTitle}
+                  </span>
+                  {selectedSources !== null && (
+                    <Button
+                      ghost
+                      size="xs"
+                      onClick={clearSourceFilters}
+                      className="shrink-0"
+                    >
+                      {t.common.clear}
+                    </Button>
+                  )}
+                </div>
+                <div className="max-h-64 overflow-y-auto p-1">
+                  {sourceOptions.length === 0 ? (
+                    <div className="px-2 py-2 text-xs text-muted-foreground">
+                      {sourceMenuTitle}
+                    </div>
+                  ) : (
+                    sourceOptions.map(([source, count]) => {
+                      const selected = selectedSourceSet.has(source);
+                      const visual = sourceVisual(source);
+                      const SourceIcon = visual.icon;
+
+                      return (
+                        <div
+                          key={source}
+                          className="flex min-w-0 items-center gap-2 px-2 py-1.5 hover:bg-secondary/40"
+                        >
+                          <Checkbox
+                            checked={selected}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              toggleSourceFilter(source);
+                            }}
+                            aria-label={`${t.sessions.sourceFilter}: ${sourceLabel(source)}`}
+                          />
+                          <button
+                            type="button"
+                            className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs"
+                            onClick={() => toggleSourceFilter(source)}
+                          >
+                            <SourceIcon className={`h-3.5 w-3.5 shrink-0 ${visual.color}`} />
+                            <span className="min-w-0 flex-1 truncate">
+                              {sourceLabel(source)}
+                            </span>
+                            <span className="shrink-0 tabular-nums text-muted-foreground">
+                              {count}
+                            </span>
+                          </button>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {showOverviewTab && !isSearching && (
+            <Segmented
+              className="w-fit shrink-0"
+              size={narrow ? "sm" : "md"}
+              value={view}
+              onChange={switchView}
+              options={[
+                { value: "overview", label: t.sessions.overview },
+                { value: "list", label: t.sessions.history },
+              ]}
+            />
+          )}
+
+          {showList && emptyCount > 0 && !isSearching && (
+            <Button
+              outlined
+              destructive
+              size="sm"
+              className="shrink-0"
+              onClick={() => setDeleteEmptyOpen(true)}
+              aria-label={t.sessions.deleteEmpty}
+              title={t.sessions.deleteEmpty}
+              prefix={<Eraser />}
+            >
+              <span className="font-mondwest normal-case text-xs">
+                {t.sessions.deleteEmpty} ({emptyCount})
+              </span>
+            </Button>
+          )}
+
+          {showList && !isSearching && (
+            <Button
+              outlined
+              size="sm"
+              className="shrink-0"
+              disabled={importingSessions}
+              onClick={() => importInputRef.current?.click()}
+              aria-label="Import exported sessions"
+              title="Import exported session JSON or JSONL"
+              prefix={importingSessions ? <Spinner /> : <Upload />}
+            >
+              <span className="font-mondwest normal-case text-xs">
+                Import sessions
+              </span>
+            </Button>
+          )}
+        </div>
+
+        {showPagination && !narrow && (
+          <SessionsPagination
+            compact
+            className="shrink-0 sm:ml-auto"
+            page={page}
+            total={total}
+            onPageChange={goToPage}
+          />
+        )}
+      </div>
+    ) : null;
 
   if (loading) {
     return (
@@ -1325,163 +1512,7 @@ export default function SessionsPage() {
         </div>
       )}
 
-      {(showOverviewTab && !isSearching) || showList ? (
-        <div className="flex w-full min-w-0 flex-wrap items-center gap-1.5 sm:gap-3">
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:gap-3">
-            <Segmented
-              className="w-fit shrink-0"
-              size={narrow ? "sm" : "md"}
-              value={sessionCategory}
-              onChange={updateSessionCategory}
-              options={[
-                { value: "chats", label: t.sessions.filterChats },
-                { value: "automation", label: t.sessions.filterAutomation },
-                { value: "all", label: t.sessions.filterAll },
-              ]}
-            />
-
-            <div ref={sourceMenuRef} className="relative shrink-0">
-              <Button
-                outlined
-                size="sm"
-                prefix={<ListFilter />}
-                suffix={
-                  <ChevronDown
-                    className={`transition-transform ${sourceMenuOpen ? "rotate-180" : ""}`}
-                  />
-                }
-                className="h-7 min-w-[10rem] max-w-[14rem] justify-between text-xs lg:h-8"
-                aria-label={t.sessions.sourceFilter}
-                aria-expanded={sourceMenuOpen}
-                onClick={() => setSourceMenuOpen((open) => !open)}
-              >
-                <span className="min-w-0 truncate">{sourceFilterLabel}</span>
-              </Button>
-
-              {sourceMenuOpen && (
-                <div
-                  className="absolute left-0 top-full z-30 mt-1 w-[18rem] max-w-[calc(100vw-2rem)] border border-border bg-background-base shadow-lg"
-                >
-                  <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-1.5">
-                    <span className="min-w-0 truncate text-xs text-muted-foreground">
-                      {sourceMenuTitle}
-                    </span>
-                    {selectedSources !== null && (
-                      <Button
-                        ghost
-                        size="xs"
-                        onClick={clearSourceFilters}
-                        className="shrink-0"
-                      >
-                        {t.common.clear}
-                      </Button>
-                    )}
-                  </div>
-                  <div className="max-h-64 overflow-y-auto p-1">
-                    {sourceOptions.length === 0 ? (
-                      <div className="px-2 py-2 text-xs text-muted-foreground">
-                        {sourceMenuTitle}
-                      </div>
-                    ) : (
-                      sourceOptions.map(([source, count]) => {
-                        const selected = selectedSourceSet.has(source);
-                        const visual = sourceVisual(source);
-                        const SourceIcon = visual.icon;
-
-                        return (
-                          <div
-                            key={source}
-                            className="flex min-w-0 items-center gap-2 px-2 py-1.5 hover:bg-secondary/40"
-                          >
-                            <Checkbox
-                              checked={selected}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                toggleSourceFilter(source);
-                              }}
-                              aria-label={`${t.sessions.sourceFilter}: ${sourceLabel(source)}`}
-                            />
-                            <button
-                              type="button"
-                              className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs"
-                              onClick={() => toggleSourceFilter(source)}
-                            >
-                              <SourceIcon className={`h-3.5 w-3.5 shrink-0 ${visual.color}`} />
-                              <span className="min-w-0 flex-1 truncate">
-                                {sourceLabel(source)}
-                              </span>
-                              <span className="shrink-0 tabular-nums text-muted-foreground">
-                                {count}
-                              </span>
-                            </button>
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {showOverviewTab && !isSearching && (
-              <Segmented
-                className="w-fit shrink-0"
-                size={narrow ? "sm" : "md"}
-                value={view}
-                onChange={switchView}
-                options={[
-                  { value: "overview", label: t.sessions.overview },
-                  { value: "list", label: t.sessions.history },
-                ]}
-              />
-            )}
-
-            {showList && emptyCount > 0 && !isSearching && (
-              <Button
-                outlined
-                destructive
-                size="sm"
-                className="shrink-0"
-                onClick={() => setDeleteEmptyOpen(true)}
-                aria-label={t.sessions.deleteEmpty}
-                title={t.sessions.deleteEmpty}
-                prefix={<Eraser />}
-              >
-                <span className="font-mondwest normal-case text-xs">
-                  {t.sessions.deleteEmpty} ({emptyCount})
-                </span>
-              </Button>
-            )}
-
-            {showList && !isSearching && (
-              <Button
-                outlined
-                size="sm"
-                className="shrink-0"
-                disabled={importingSessions}
-                onClick={() => importInputRef.current?.click()}
-                aria-label="Import exported sessions"
-                title="Import exported session JSON or JSONL"
-                prefix={importingSessions ? <Spinner /> : <Upload />}
-              >
-                <span className="font-mondwest normal-case text-xs">
-                  Import sessions
-                </span>
-              </Button>
-            )}
-          </div>
-
-          {showPagination && !narrow && (
-            <SessionsPagination
-              compact
-              className="shrink-0 sm:ml-auto"
-              page={page}
-              total={total}
-              onPageChange={goToPage}
-            />
-          )}
-        </div>
-      ) : null}
+      {transcriptOwnsViewport ? null : listToolbar}
 
       {showList ? (
         <>
@@ -1491,8 +1522,16 @@ export default function SessionsPage() {
               bounded viewport (`flex-1 min-h-0`): each pane scrolls inside
               itself, and the transcript header + quick-jump bar stay put.
               `min-h-[18rem]` keeps the pane usable when the chrome above is
-              tall; the page scrolls rather than collapsing it. */}
-          <div className="flex min-h-[18rem] w-full min-w-0 flex-1 flex-col gap-3 lg:min-h-0 lg:flex-row lg:gap-4">
+              tall; the page scrolls rather than collapsing it. While
+              `transcriptOwnsViewport` no chrome sits above the row at all, but
+              the floor stays for the case where a tall error/action banner is
+              the only thing on screen. */}
+          <div
+            className={cn(
+              "flex w-full min-w-0 flex-1 flex-col gap-3 lg:min-h-0 lg:flex-row lg:gap-4",
+              transcriptOwnsViewport ? "min-h-0" : "min-h-[18rem]",
+            )}
+          >
             {selectedSession ? (
               <SessionTranscriptPane
                 key={selectedSession.id}
@@ -1505,6 +1544,7 @@ export default function SessionsPage() {
                   narrow ? () => setListDrawerOpen(true) : undefined
                 }
                 listOpen={listDrawerOpen}
+                onOpenNav={transcriptOwnsViewport ? openNavigation : undefined}
               />
             ) : (
               <div className="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center border border-border bg-background-base/40 p-8 text-center text-muted-foreground">
@@ -1529,6 +1569,10 @@ export default function SessionsPage() {
               backdropDismissLabel={t.common.close}
             >
               <div id="sessions-list-panel" className="px-3 pt-3">
+                {/* The list-level chrome the pane took over: it lives here on
+                    a phone, so nothing is lost — it is one deliberate tap
+                    away instead of a permanent row of screen. */}
+                {transcriptOwnsViewport ? listToolbar : null}
                 {listPanel(
                   "h-[65dvh] flex-none border-0 bg-transparent",
                   drawerPagination,

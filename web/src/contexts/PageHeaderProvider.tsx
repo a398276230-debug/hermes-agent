@@ -1,6 +1,7 @@
 import { useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation } from "react-router";
 import { PageHeaderContext } from "./page-header-context";
+import { useAppShell } from "./useAppShell";
 import { resolvePageTitle } from "@/lib/resolve-page-title";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
@@ -14,6 +15,7 @@ export function PageHeaderProvider({
 }) {
   const { pathname } = useLocation();
   const { t } = useI18n();
+  const { immersive } = useAppShell();
   const [titleOverride, setTitleOverride] = useState<string | null>(null);
   const [afterTitle, setAfterTitle] = useState<ReactNode>(null);
   const [end, setEnd] = useState<ReactNode>(null);
@@ -58,6 +60,10 @@ export function PageHeaderProvider({
             "bg-background-base",
             // Mobile stacks title + toolbar — fixed h-14 clips content; desktop stays one row.
             "min-h-0 overflow-x-hidden overflow-y-visible py-3 sm:h-14 sm:min-h-[3.5rem] sm:overflow-hidden sm:py-0",
+            // An immersive page (phone-wide transcript) replaces this bar with
+            // its own: it renders the session title, its live badge and the
+            // toolbar actions in the place this header would occupy.
+            immersive && "max-lg:hidden",
           )}
           role="banner"
         >

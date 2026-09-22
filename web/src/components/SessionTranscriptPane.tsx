@@ -19,6 +19,13 @@
  * message viewport is the only thing that scrolls, so a 500-row transcript
  * can never push the header — or the session rail beside it — off screen.
  * The floating bar in the corner is the way back to either end of it.
+ *
+ * Below lg the pane stops being half of a master-detail pair and becomes the
+ * whole page: the app frame and the page header stand down (`AppShellContext`)
+ * and this header turns into the phone's top bar — two rows carrying the
+ * navigation hamburger, the session title, its live badge, the session-list
+ * button and the live-tail switch. `onOpenList` is only ever passed on a
+ * narrow viewport, so it is the pane's own narrow signal.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -26,6 +33,7 @@ import {
   ArrowDownToLine,
   ArrowUpToLine,
   ListFilter,
+  Menu,
   MessagesSquare,
   RefreshCw,
 } from "lucide-react";
@@ -60,6 +68,12 @@ interface SessionTranscriptPaneProps {
   onOpenList?: () => void;
   /** Whether that drawer is currently open (drives `aria-expanded`). */
   listOpen?: boolean;
+  /**
+   * Mobile only — opens the app-wide navigation drawer. Passed while the pane
+   * is the phone's top bar (see `AppShellContext`): the app header that
+   * normally carries the hamburger is hidden then, so the pane carries it.
+   */
+  onOpenNav?: () => void;
   className?: string;
 }
 
@@ -71,6 +85,7 @@ export function SessionTranscriptPane({
   highlight,
   onOpenList,
   listOpen,
+  onOpenNav,
   className,
 }: SessionTranscriptPaneProps) {
   const { t } = useI18n();
@@ -184,6 +199,81 @@ export function SessionTranscriptPane({
       ? session.preview.slice(0, 80)
       : t.sessions.untitledSession;
   const titleLabel = title ?? t.sessions.untitledSession;
+  // Below lg the pane IS the page (see `App.tsx`): its header becomes the
+  // phone's top bar, so it carries the navigation hamburger and the compact
+  // session-list button that the hidden app header and page toolbar held.
+  const mobileChrome = Boolean(onOpenList);
+
+  const titleNode = (
+    <span
+      className={cn(
+        "font-mondwest min-w-0 flex-1 truncate text-sm normal-case",
+        hasTitle ? "font-medium" : "text-muted-foreground italic",
+      )}
+      title={titleLabel}
+    >
+      {titleLabel}
+    </span>
+  );
+
+  const liveBadge = session.is_active ? (
+    <Badge tone="success" className="shrink-0 text-xs">
+      <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
+      {t.common.live}
+    </Badge>
+  ) : null;
+
+  const metaRowClass =
+    "flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground";
+
+  const metaItems = (
+    <>
+      <Badge tone="outline" className="text-xs">
+        <SourceIcon className={`mr-1 h-3 w-3 ${sourceInfo.color}`} />
+        {session.source ? sourceLabel(session.source) : "local"}
+      </Badge>
+      {session.model && (
+        <>
+          <span className="max-w-[min(100%,14rem)] truncate">
+            {session.model.split("/").pop()}
+          </span>
+          <span className="text-border">&#183;</span>
+        </>
+      )}
+      <span className="shrink-0">
+        {session.message_count} {t.common.msgs}
+      </span>
+      {session.tool_call_count > 0 && (
+        <>
+          <span className="text-border">&#183;</span>
+          <span className="shrink-0">
+            {session.tool_call_count} {t.common.tools}
+          </span>
+        </>
+      )}
+      <span className="text-border">&#183;</span>
+      <span className="shrink-0">{timeAgo(session.last_active)}</span>
+    </>
+  );
+
+  const liveTailControl = (
+    <div className="ml-auto flex min-w-0 flex-wrap items-center gap-2">
+      <Switch
+        id={liveTailId}
+        checked={liveTailEnabled}
+        onCheckedChange={toggleLiveTail}
+      />
+      <Label htmlFor={liveTailId} className="cursor-pointer text-xs">
+        {t.sessions.liveTail}
+      </Label>
+      {liveTailEnabled && (
+        <Badge tone="success" className="text-xs">
+          <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
+          {t.common.live}
+        </Badge>
+      )}
+    </div>
+  );
 
   return (
     <section
@@ -200,101 +290,76 @@ export function SessionTranscriptPane({
       {/* Pinned chrome: inside the viewport-locked pane the header can never
           scroll away in the first place; `sticky` keeps it reachable if the
           page does scroll (short viewport, taller page chrome above). */}
-      <header className="sticky top-0 z-20 flex min-w-0 shrink-0 flex-col gap-2 border-b border-border bg-background-base/95 px-3 py-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
-          <div className="flex min-w-0 flex-1 flex-col gap-1">
+      <header
+        className={cn(
+          "sticky top-0 z-20 flex min-w-0 shrink-0 flex-col border-b border-border bg-background-base/95 px-3",
+          // Phone: the tightest two-row bar that still holds the navigation
+          // opener, the title, its live badge, the session list and the
+          // live-tail switch. Desktop keeps the roomier original spacing.
+          mobileChrome ? "gap-1.5 py-1.5" : "gap-2 py-2",
+        )}
+      >
+        {mobileChrome ? (
+          // Phone: two rows instead of three. Row 1 is the page's top bar
+          // (navigation, session title, live badge, session list); row 2 keeps
+          // the session metadata and the live-tail switch, so the transcript
+          // below keeps every pixel the stacked headers used to eat.
+          <>
             <div className="flex min-w-0 items-center gap-2">
-              <span
-                className={cn(
-                  "font-mondwest min-w-0 flex-1 truncate text-sm normal-case",
-                  hasTitle ? "font-medium" : "text-muted-foreground italic",
-                )}
-                title={titleLabel}
-              >
-                {titleLabel}
-              </span>
-              {session.is_active && (
-                <Badge tone="success" className="shrink-0 text-xs">
-                  <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
-                  {t.common.live}
-                </Badge>
+              {onOpenNav && (
+                <Button
+                  ghost
+                  size="icon"
+                  className="shrink-0"
+                  onClick={onOpenNav}
+                  aria-label={t.app.openNavigation}
+                  aria-controls="app-sidebar"
+                >
+                  <Menu />
+                </Button>
+              )}
+
+              {titleNode}
+              {liveBadge}
+
+              {onOpenList && (
+                <Button
+                  outlined
+                  size="icon"
+                  className="shrink-0"
+                  onClick={onOpenList}
+                  aria-label={t.sessions.sessionList}
+                  title={t.sessions.sessionList}
+                  aria-controls="sessions-list-panel"
+                  aria-expanded={listOpen}
+                  aria-haspopup="dialog"
+                >
+                  <ListFilter />
+                </Button>
               )}
             </div>
 
-            <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
-              <Badge tone="outline" className="text-xs">
-                <SourceIcon className={`mr-1 h-3 w-3 ${sourceInfo.color}`} />
-                {session.source ? sourceLabel(session.source) : "local"}
-              </Badge>
-              {session.model && (
-                <>
-                  <span className="max-w-[min(100%,14rem)] truncate">
-                    {session.model.split("/").pop()}
-                  </span>
-                  <span className="text-border">&#183;</span>
-                </>
-              )}
-              <span className="shrink-0">
-                {session.message_count} {t.common.msgs}
-              </span>
-              {session.tool_call_count > 0 && (
-                <>
-                  <span className="text-border">&#183;</span>
-                  <span className="shrink-0">
-                    {session.tool_call_count} {t.common.tools}
-                  </span>
-                </>
-              )}
-              <span className="text-border">&#183;</span>
-              <span className="shrink-0">{timeAgo(session.last_active)}</span>
+            <div className={metaRowClass}>
+              {metaItems}
+              {liveTailControl}
             </div>
-          </div>
+          </>
+        ) : (
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
+            <div className="flex min-w-0 flex-1 flex-col gap-1">
+              <div className="flex min-w-0 items-center gap-2">
+                {titleNode}
+                {liveBadge}
+              </div>
 
-          {/* Phone: the list button and the auto-refresh switch share a second
-              row under the (now full-width) title block, so a pinned header
-              costs the transcript as few rows as possible. From lg up
-              `contents` dissolves this wrapper, leaving the switch inline next
-              to the title exactly as before. */}
-          <div className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5 lg:contents">
-            {/* Mobile: the session list lives in a drawer, so the main pane
-                needs its own way in. Hidden from lg up, where the list sidebar
-                is permanently on screen. */}
-            {onOpenList && (
-              <Button
-                outlined
-                size="sm"
-                className="shrink-0 lg:hidden"
-                onClick={onOpenList}
-                aria-label={t.sessions.sessionList}
-                aria-controls="sessions-list-panel"
-                aria-expanded={listOpen}
-                aria-haspopup="dialog"
-                prefix={<ListFilter />}
-              >
-                <span className="font-mondwest normal-case text-xs">
-                  {t.sessions.sessionList}
-                </span>
-              </Button>
-            )}
+              <div className={metaRowClass}>{metaItems}</div>
+            </div>
 
-            <div className="ml-auto flex min-w-0 flex-wrap items-center gap-2">
-              <Switch
-                id={liveTailId}
-                checked={liveTailEnabled}
-                onCheckedChange={toggleLiveTail}
-              />
-              <Label htmlFor={liveTailId} className="cursor-pointer text-xs">
-                {t.sessions.liveTail}
-              </Label>
-              {liveTailEnabled && (
-                <Badge tone="success" className="text-xs">
-                  <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
-                  {t.common.live}
-                </Badge>
-              )}
+            <div className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5 lg:contents">
+              {liveTailControl}
             </div>
           </div>
-        </div>
+        )}
 
         {liveTailEnabled && liveError && (
           <span className="flex items-center gap-1 text-xs text-destructive">

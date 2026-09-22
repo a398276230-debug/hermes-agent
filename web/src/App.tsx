@@ -69,6 +69,10 @@ import { useSidebarStatus } from "@/hooks/useSidebarStatus";
 import { AuthWidget } from "@/components/AuthWidget";
 import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
 import { ProfileProvider } from "@/contexts/ProfileProvider";
+import {
+  AppShellContext,
+  type AppShellContextValue,
+} from "@/contexts/app-shell-context";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { ProfileSwitcher } from "@/components/ProfileSwitcher";
 import { ProfileScopeBanner } from "@/components/ProfileScopeBanner";
@@ -377,6 +381,18 @@ export default function App() {
   const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
+  // Below lg a workspace page can request the whole viewport (see
+  // `app-shell-context.ts`): no app header, no page header, just its own top
+  // bar. Sessions turns it off again on unmount.
+  const [immersive, setImmersive] = useState(false);
+  const shell = useMemo<AppShellContextValue>(
+    () => ({
+      immersive,
+      setImmersive,
+      openNavigation: () => setMobileOpen(true),
+    }),
+    [immersive],
+  );
 
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -517,6 +533,7 @@ export default function App() {
 
   return (
     <ProfileProvider>
+    <AppShellContext.Provider value={shell}>
     <div
       data-layout-variant={layoutVariant}
       className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background-base text-text-primary antialiased"
@@ -536,6 +553,10 @@ export default function App() {
           "flex items-center gap-2 px-4 py-2",
           "border-b border-current/20",
           "bg-background-base",
+          // An immersive page puts its own top bar at y=0 and carries the
+          // navigation affordance itself; hiding this one below lg is what
+          // buys the transcript the extra row.
+          immersive && "max-lg:hidden",
         )}
         style={{
           background:
@@ -576,8 +597,12 @@ export default function App() {
       {/* Single mobile header clearance for the banner stack + content. The
           fixed lg:hidden header is h-14/z-40; previously each banner carried
           its own mt-14 AND the content kept pt-14, so two visible banners
-          stacked three offsets (NS-656 review P3). One spacer, applied once. */}
-      <div aria-hidden className="h-14 shrink-0 lg:hidden" />
+          stacked three offsets (NS-656 review P3). One spacer, applied once.
+          An immersive page drops both the bar and this clearance with it. */}
+      <div
+        aria-hidden
+        className={cn("h-14 shrink-0 lg:hidden", immersive && "max-lg:hidden")}
+      />
       <PluginSlot name="header-banner" />
       <ProfileScopeBanner />
       <MemoryPressureBanner status={sidebarStatus} />
@@ -763,10 +788,20 @@ export default function App() {
             <div
               className={cn(
                 "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
-                "px-3 sm:px-6",
-                isChatRoute
-                  ? "pb-0 pt-1 sm:pt-2 lg:pt-4"
-                  : "pt-2 sm:pt-4 lg:pt-6",
+                // An immersive page below lg IS the viewport: the horizontal
+                // gutter and the top breather go with the chrome, so the
+                // transcript runs edge to edge. Emitting *only* the zero
+                // values (rather than a `max-lg:` override) keeps this free of
+                // any dependency on Tailwind's variant order, and the `lg:`
+                // restatements keep desktop padding correct even if the flag
+                // survives the frame in which the viewport crosses the
+                // breakpoint. A page requests this only on a narrow viewport.
+                immersive ? "px-0 pt-0 lg:px-3 lg:pt-6" : "px-3 sm:px-6",
+                immersive
+                  ? null
+                  : isChatRoute
+                    ? "pb-0 pt-1 sm:pt-2 lg:pt-4"
+                    : "pt-2 sm:pt-4 lg:pt-6",
                 isDocsRoute && "min-h-0 flex-1",
               )}
             >
@@ -841,6 +876,7 @@ export default function App() {
 
       <PluginSlot name="overlay" />
     </div>
+    </AppShellContext.Provider>
     </ProfileProvider>
   );
 }
