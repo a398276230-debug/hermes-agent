@@ -17,6 +17,7 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 
 import { Markdown } from "@/components/Markdown";
 import { toolResultPreview } from "@/lib/tool-result-preview";
+import { contentToText, toolArgumentsToText } from "@/lib/message-content";
 import { isPinnedToBottom } from "@/lib/session-live-tail";
 import { timeAgo } from "@/lib/utils";
 import type { SessionMessage } from "@/lib/api";
@@ -79,12 +80,15 @@ function splitCompactionContent(content: string): CompactionSplit | null {
 function ToolCallBlock({
   toolCall,
 }: {
-  toolCall: { id: string; function: { name: string; arguments: string } };
+  toolCall: { id: string; function: { name: string; arguments: unknown } };
 }) {
   const [open, setOpen] = useState(false);
   const { t } = useI18n();
 
-  let args = toolCall.function.arguments;
+  // Imported transcripts can carry the already-parsed argument object; the
+  // pretty-print round trip below only applies to the JSON string Hermes
+  // itself persists.
+  let args = toolArgumentsToText(toolCall.function.arguments);
   try {
     args = JSON.stringify(JSON.parse(args), null, 2);
   } catch {
@@ -129,12 +133,15 @@ function ToolCallBlock({
  */
 function ToolResultBubble({
   msg,
+  content,
   label,
   style,
   isHit,
   highlightTerms,
 }: {
   msg: SessionMessage;
+  /** Already coerced by the caller (`msg.content` may be a multimodal array). */
+  content: string;
   label: string;
   style: { bg: string; text: string };
   isHit: boolean;
@@ -146,7 +153,6 @@ function ToolResultBubble({
   // explicit toggle pins the reader's choice for the life of the bubble.
   const [override, setOverride] = useState<boolean | null>(null);
   const expanded = override ?? isHit;
-  const content = msg.content ?? "";
   const { lines, preview } = toolResultPreview(content);
 
   return (
@@ -261,6 +267,12 @@ export function MessageBubble({
     },
   };
 
+  // A stored body is not always a string (see `contentToText`): multimodal
+  // rows arrive as an array of parts, an object for foreign transcripts.
+  // Coerce once here and every branch below — compaction split, search hit,
+  // markdown body — sees text.
+  const content = contentToText(msg.content);
+
   // When a compaction handoff is merged into the front of the first
   // tail message (the compressor's double-collision path —
   // ``_merge_summary_into_tail`` in ``agent/context_compressor.py``),
@@ -268,10 +280,7 @@ export function MessageBubble({
   // + <original assistant reply>``. We split it back into two visual
   // rows here so the operator's actual answer survives as a readable
   // bubble next to the (clearly-labelled) handoff metadata (#29824).
-  const compactionSplit =
-    typeof msg.content === "string"
-      ? splitCompactionContent(msg.content)
-      : null;
+  const compactionSplit = splitCompactionContent(content);
 
   if (compactionSplit && compactionSplit.remainder) {
     return (
@@ -308,10 +317,10 @@ export function MessageBubble({
 
   // Check if any search term appears as a prefix of any word in content
   const isHit = (() => {
-    if (!highlight || !msg.content) return false;
-    const content = msg.content.toLowerCase();
+    if (!highlight || !content) return false;
+    const haystack = content.toLowerCase();
     const terms = highlight.toLowerCase().split(/\s+/).filter(Boolean);
-    return terms.some((term) => content.includes(term));
+    return terms.some((term) => haystack.includes(term));
   })();
 
   // Split search query into terms for inline highlighting
@@ -323,10 +332,11 @@ export function MessageBubble({
   // summary row so a phone reader can scan past them; a search hit expands
   // automatically because that is the row the reader came for. A row with no
   // body has nothing to collapse and keeps the plain layout.
-  if (msg.role === "tool" && msg.content) {
+  if (msg.role === "tool" && content) {
     return (
       <ToolResultBubble
         msg={msg}
+        content={content}
         label={label}
         style={style}
         isHit={isHit}
@@ -353,13 +363,13 @@ export function MessageBubble({
           </span>
         )}
       </div>
-      {msg.content &&
+      {content &&
         (msg.role === "system" ? (
           <div className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
-            {msg.content}
+            {content}
           </div>
         ) : (
-          <Markdown content={msg.content} highlightTerms={highlightTerms} />
+          <Markdown content={content} highlightTerms={highlightTerms} />
         ))}
       {msg.tool_calls && msg.tool_calls.length > 0 && (
         <div className="mt-1">

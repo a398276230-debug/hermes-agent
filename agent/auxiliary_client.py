@@ -183,6 +183,12 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
         # Availability probe: resolved credentials/base_url are the answer.
         return _AuxProbeClientStub(api_key=api_key, base_url=base_url)
     kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}
+    from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+
+    # Named/anonymous custom endpoints and built-ins share the same wire gate.
+    # Extracted query parameters belong to the OpenAI SDK, not native Gemini.
+    if is_native_gemini_base_url(base_url) and "default_query" not in kwargs:
+        return GeminiNativeClient(api_key=api_key, base_url=base_url, **kwargs)
     _apply_required_codex_headers(kwargs, access_token=api_key, base_url=base_url)
     # Hermes owns aux retry/fallback policy; the SDK default (max_retries=2) would triple
     # wall time on a hung endpoint before Hermes sees one failure.
@@ -2182,12 +2188,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 api_key = runtime["api_key"]
             via = " (session endpoint)"
         logger.debug("Auxiliary text client: %s (%s)%s", pconfig.name, model, via)
-        # Native Gemini, else OpenAI-wire + Anthropic rewrap.
+        # OpenAI-wire + Anthropic rewrap; the factory picks native Gemini by wire (URL) shape.
         base_url = _to_openai_base_url(raw_base_url)
-        if provider_id == "gemini":
-            from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
-            if is_native_gemini_base_url(base_url):
-                return GeminiNativeClient(api_key=api_key, base_url=base_url), model
         if base_url_host_matches(base_url, "api.kimi.com"):
             headers = {"User-Agent": "claude-code/0.1.0"}
         elif base_url_host_matches(base_url, "githubcopilot.com"):
@@ -2840,7 +2842,7 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
     model = _read_main_model_for_aux() or "gpt-4o-mini"
     logger.debug("Auxiliary client: custom endpoint (%s, api_mode=%s)", model, custom_mode or "chat_completions")
     _clean_base, _dq = _extract_url_query_params(custom_base)
-    _extra = {"default_query": _dq} if _dq else {}
+    _extra = {"default_query": _dq} if _dq is not None else {}
     # User model.default_headers override SDK fingerprint headers (as on the main client) for strict gateways/WAFs.
     _custom_headers = _apply_user_default_headers(None)
     if _custom_headers:
@@ -3690,6 +3692,7 @@ def _prepare_same_provider_retry(
         temperature=temperature, max_tokens=max_tokens, tools=tools, timeout=effective_timeout,
         extra_body=effective_extra_body, reasoning_config=reasoning_config,
         base_url=retry_base or resolved_base_url, task=task,
+        native_gemini=_is_native_gemini_client(retry_client),
     )
     # Preserve per-request attribution headers (e.g. Copilot ``x-initiator``) so the retry keeps capability gating.
     if extra_headers:
@@ -3931,6 +3934,7 @@ def _fallback_request_kwargs(
     tools: Optional[list], temperature: Optional[float], max_tokens: Optional[int],
     effective_timeout: float, effective_extra_body: dict, reasoning_config: Optional[dict],
     fallback_entry: dict, task_config: dict, apply_fast_lane: bool,
+    native_gemini: bool,
 ) -> Dict[str, Any]:
     """Build request kwargs for one fallback destination (cache-section replan + fast-lane cap)."""
     fallback_max_tokens, fallback_extra_body = max_tokens, effective_extra_body
@@ -3945,7 +3949,8 @@ def _fallback_request_kwargs(
     fb_kwargs = _build_call_kwargs(
         destination.provider, destination.model, fallback_messages,
         temperature=temperature, max_tokens=fallback_max_tokens, tools=fallback_tools, timeout=effective_timeout,
-        extra_body=fallback_extra_body, reasoning_config=reasoning_config, base_url=destination.base_url, task=task)
+        extra_body=fallback_extra_body, reasoning_config=reasoning_config, base_url=destination.base_url, task=task,
+        native_gemini=native_gemini)
     return fb_kwargs
 
 
@@ -3980,9 +3985,11 @@ def _plan_fallback_candidate(
             provider, destination.base_url or str(getattr(client, "base_url", "") or ""),
             destination.api_mode, model or destination.model,
         )
-        return retry_destination, _fallback_request_kwargs(retry_destination, **common)
+        return retry_destination, _fallback_request_kwargs(
+            retry_destination, native_gemini=_is_native_gemini_client(client), **common)
 
-    return destination, _fallback_request_kwargs(destination, **common), _rebuild
+    return destination, _fallback_request_kwargs(
+        destination, native_gemini=_is_native_gemini_client(fb_client), **common), _rebuild
 
 
 def _quarantine_fallback_candidate(
@@ -5020,7 +5027,7 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
         )
         extra = {}
         _clean_base, _dq = _extract_url_query_params(custom_base)
-        if _dq:
+        if _dq is not None:
             extra["default_query"] = _dq
         _custom_headers = _endpoint_default_headers(custom_base, provider, is_vision=req.is_vision)
         if _custom_headers:
@@ -5050,7 +5057,7 @@ def _named_custom_openai_wire_client(custom_base: str, custom_key: Any, extra_he
     ``extra_headers`` is the entry's own header block (gateway routing tags, proxy auth): the main
     runtime lifts it onto every request, so aux must too (#109595). SECURITY: never log the values."""
     _clean_base, _dq = _extract_url_query_params(_to_openai_base_url(custom_base))
-    _extra = {"default_query": _dq} if _dq else {}
+    _extra = {"default_query": _dq} if _dq is not None else {}
     _headers = _apply_user_default_headers(None)
     if extra_headers:
         _headers = {**(_headers or {}), **extra_headers}
@@ -5209,12 +5216,6 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     if profile_client is not None:
         logger.debug("resolve_provider_client: %s native client from provider profile (%s)", provider, final_model)
         return _route_client(req, profile_client, final_model)
-    if provider == "gemini":
-        from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
-        if is_native_gemini_base_url(base_url):
-            client = GeminiNativeClient(api_key=api_key, base_url=base_url)
-            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
-            return _route_client(req, client, final_model)
     headers = _endpoint_default_headers(base_url, provider, is_vision=req.is_vision, xai=True)
     client = _create_openai_client(api_key=api_key, base_url=base_url, **({"default_headers": headers} if headers else {}))
     # Copilot GPT-5+ models (except gpt-5-mini) are only reachable via the Responses API;
@@ -6550,12 +6551,18 @@ def _merge_aux_extra_body(
     return merged_extra
 
 
+def _is_native_gemini_client(client: Any) -> bool:
+    """True when *client* is the Gemini native wire already chosen by the factory."""
+    from agent.gemini_native_adapter import AsyncGeminiNativeClient, GeminiNativeClient
+    return isinstance(client, (AsyncGeminiNativeClient, GeminiNativeClient))
+
+
 def _build_call_kwargs(
     provider: str, model: str, messages: list, temperature: Optional[float] = None,
     max_tokens: Optional[int] = None, tools: Optional[list] = None, timeout: float = 30.0,
     extra_body: Optional[dict] = None, reasoning_config: Optional[dict] = None,
     base_url: Optional[str] = None, task: Optional[str] = None,
-    no_progress_timeout: Optional[float] = None,
+    no_progress_timeout: Optional[float] = None, native_gemini: bool = False,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments.
     ``no_progress_timeout`` is a Codex-Responses-only extra (consumed by
@@ -6598,8 +6605,16 @@ def _build_call_kwargs(
     reasoning_config = clamp_reasoning_config(
         known_reasoning_floor(reasoning_config, provider_norm, effective_base, model, task))
     projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config)
+    if native_gemini:
+        # Keep generic extra_body.reasoning off the native wire; thinking is projected below.
+        projection = projection._replace(handles_reasoning=True)
     kwargs.update(projection.top_level)
     merged_extra = _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm)
+    if native_gemini and not any(key in merged_extra for key in ("thinking_config", "thinkingConfig")):
+        from agent.transports.chat_completions import _build_gemini_thinking_config
+        thinking_config = _build_gemini_thinking_config(model, reasoning_config)
+        if thinking_config:
+            merged_extra["thinking_config"] = thinking_config
     if "response_format" in merged_extra:
         from agent.auxiliary_structured_output import without_unsupported_response_format
         merged_extra = without_unsupported_response_format(merged_extra, provider_norm, effective_base, model, task)
@@ -7016,6 +7031,9 @@ class _ChatStreamAccumulator:
             if getattr(tc, "id", None):
                 acc["id"] = tc.id
                 made_progress = True
+            extra = getattr(tc, "extra_content", None)
+            if extra is not None:
+                acc["extra_content"] = extra
             fn = getattr(tc, "function", None)
             if fn is not None:
                 if getattr(fn, "name", None):
@@ -7068,8 +7086,11 @@ class _ChatStreamAccumulator:
         tool_calls = None
         if self.tool_calls_acc:
             tool_calls = [
-                SimpleNamespace(id=acc["id"], type="function", function=SimpleNamespace(
-                    name=acc["name"], arguments="".join(acc["arguments"])))
+                SimpleNamespace(
+                    id=acc["id"], type="function",
+                    function=SimpleNamespace(name=acc["name"], arguments="".join(acc["arguments"])),
+                    **(({"extra_content": acc["extra_content"]}) if "extra_content" in acc else {}),
+                )
                 for _idx, acc in sorted(self.tool_calls_acc.items())]
         message = SimpleNamespace(
             role="assistant", content="".join(self.content_parts), tool_calls=tool_calls,
@@ -7279,7 +7300,7 @@ def _prepare_aux_request(
         request_provider, final_model, messages, temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config, base_url=base_info or resolved_base_url, task=task,
-        no_progress_timeout=no_progress_timeout)
+        no_progress_timeout=no_progress_timeout, native_gemini=_is_native_gemini_client(client))
     if extra_headers:
         kwargs["extra_headers"] = dict(extra_headers)
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)

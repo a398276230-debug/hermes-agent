@@ -1189,6 +1189,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # @mssteuer.)
         self._direct_model_requests: bool = _coerce_request_bool(
             extra.get("direct_model_requests"), default=False)
+        # Opt-in (#50319 follow-up): this deployment's API clients are DURABLE-HISTORY
+        # consumers — they poll ``GET /api/sessions/{id}/messages`` — so a background
+        # completion CAN be delivered to them even though this adapter has no push channel.
+        # Only requests that supply an explicit ``X-Hermes-Session-Id``
+        # (``session_history_delivery="1"``) get async delivery: a fingerprint-derived id
+        # has no declared consumer to read the delivery. Off by default — a generic
+        # stateless client must keep getting the honest "poll it yourself" answer.
+        self._async_delivery_for_history: bool = _coerce_request_bool(
+            extra.get("async_delivery", _get_scoped_secret("API_SERVER_ASYNC_DELIVERY", "")),
+            default=False)
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -3835,8 +3845,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _bind_api_server_session(
         *, chat_id: str = "", session_key: str = "", session_id: str = "", profile: str = "",
         browser_control_principal: str = "", browser_control_transport_family: str = "",
-        session_history_delivery: str = "") -> list:
+        session_history_delivery: str = "", async_delivery: bool = False) -> list:
         """Bind an API turn with push disabled and history delivery default-denied.
+
+        ``async_delivery`` is the ONE exception, granted by ``_async_delivery_binding``
+        only when this deployment opted in AND the request declared a durable-history
+        consumer for its session id — a background completion then has a place to land
+        (``gateway/wake.py``). Everything else keeps today's push-disabled binding.
 
         Only routes whose continuation reads SessionDB may pass "1". An omitted
         declaration or fingerprint-derived identity keeps delegation synchronous.
@@ -3849,7 +3864,20 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             platform="api_server", chat_id=chat_id, session_key=session_key, session_id=session_id,
             profile=profile, browser_control_principal=browser_control_principal,
             browser_control_transport_family=browser_control_transport_family,
-            async_delivery=False, cron_session="", session_history_delivery=session_history_delivery)
+            async_delivery=async_delivery, cron_session="", session_history_delivery=session_history_delivery)
+
+    def _async_delivery_binding(self, session_history_delivery: Any) -> bool:
+        """Whether THIS turn may receive asynchronous (post-turn) deliveries.
+
+        Both halves are required: the deployment opted in (``async_delivery`` on
+        ``platforms.api_server`` / ``API_SERVER_ASYNC_DELIVERY``) and the request declared a
+        durable-history consumer for its session id. The delivery itself still travels the
+        existing wake routes — a self-post wake turn for watch/completion events, a durable
+        DELIVERY row for async delegations — never a new push channel (there is none).
+        """
+        if not self._async_delivery_for_history:
+            return False
+        return session_history_delivery == "1" or session_history_delivery is True
 
     def _turn_runtime_metadata(
         self, agent: Any, *, route: Optional[Dict[str, Any]], requested_runtime: Optional[Dict[str, Any]],
@@ -3933,7 +3961,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
         session_history_delivery: str = "", turn_author: Optional[Dict[str, Any]] = None,
         relay_metadata: Optional[Dict[str, Any]] = None, notification_category: str = "result",
-        resume_unanswered_turn: bool = False) -> tuple:
+        wake_turn: bool = False, resume_unanswered_turn: bool = False) -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``agent_ref[0]`` receives the agent so SSE writers can interrupt it; ``active_run_id``
         registers it in ``_active_run_agents``. Under a confirmed model lock the actual
@@ -3960,7 +3988,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     session_id=session_id or "", profile=request_profile or "",
                     browser_control_principal=request_browser_control_principal,
                     browser_control_transport_family=request_browser_control_transport_family,
-                    session_history_delivery=session_history_delivery)
+                    session_history_delivery=session_history_delivery,
+                    async_delivery=self._async_delivery_binding(session_history_delivery))
                 agent = None
                 from agent.notification_presentation import notification_turn
                 from gateway.warning_notifications import diagnostic_turn_muted
@@ -4018,6 +4047,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     )
                     if relay_metadata:
                         conversation_kwargs["relay_metadata"] = relay_metadata
+                    if wake_turn:
+                        # A wake turn is machinery, not a client prompt: it is the gateway's own
+                        # background-completion notification self-posted into the session
+                        # (``gateway/wake.py``). Marking the persisted user row lets a durable
+                        # consumer (any client that reads ``/api/sessions/{id}/messages``)
+                        # recognise the detached delivery, and keeps bare silence markers
+                        # suppressible for it — the same shape gateway self-injected turns use.
+                        from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
+                        conversation_kwargs["persist_user_display_kind"] = INTERNAL_NOTIFICATION_DISPLAY_KIND
                     with notification_turn(agent, muted=muted, session_id=session_id or ""):
                         result = agent.run_conversation(**conversation_kwargs)
                     result, usage = self._finish_turn_result(

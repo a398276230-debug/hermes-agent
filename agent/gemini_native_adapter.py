@@ -15,7 +15,8 @@ import re
 import time
 import uuid
 from types import SimpleNamespace
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -79,8 +80,9 @@ _STUDIO_KEY_ON_EXPRESS_GUIDANCE = (
 # the request alternation-valid while the user's message stays a turn of its own
 # (mirrors gemini-cli's placeholder repair).
 _INTERRUPTED_RESPONSE_PLACEHOLDER = "[The previous response was interrupted before it completed.]"
-# Cross-provider tool_calls (e.g. fallback from xAI/Anthropic) carry no Gemini thoughtSignature;
-# without this sentinel Gemini 3 thinking models reject replayed history with 400 INVALID_ARGUMENT.
+# AI Studio accepts this sentinel for unsigned cross-provider tool history (Gemini 3 thinking
+# models reject a replayed history with no signature at all). Native proxies need a real
+# signature, or the field omitted entirely; see ``_translate_tool_call_to_gemini``.
 _SKIP_SIGNATURE = "skip_thought_signature_validator"
 _END = object()  # stream-exhausted marker for _advance_stream_iterator
 _TOOL_CHOICE_MODES = {"auto": "AUTO", "required": "ANY", "none": "NONE"}
@@ -160,22 +162,36 @@ def normalize_gemini_base_url(base_url: Optional[str]) -> str:
 def is_native_gemini_base_url(base_url: str) -> bool:
     """True when the endpoint speaks Gemini's native REST API (not an OpenAI-compatible surface).
 
-    Local addition: a custom endpoint that exposes the native ``/v1beta`` surface (e.g. a
-    CLIProxyAPI local proxy) is treated as native even though its host is not Google's. Google /
-    Vertex hosts keep upstream's detection unchanged — in particular the OAuth Vertex provider's
-    OpenAI-compatible ``…/endpoints/openapi`` base stays off the native adapter.
+    Recognizes Google's native API and explicitly configured ``/v1beta`` proxies: a custom endpoint
+    that exposes the native ``/v1beta`` surface (e.g. a CLIProxyAPI local proxy) is treated as native
+    even though its host is not Google's. Google / Vertex hosts keep upstream's detection unchanged —
+    in particular the OAuth Vertex provider's OpenAI-compatible ``…/endpoints/openapi`` base stays off
+    the native adapter. Parsing is strict (``urlsplit``): a query/fragment marker or a non-http(s)
+    scheme changes how the request URL joins, so those stay on the OpenAI wire.
     """
-    normalized = str(base_url or "").strip().rstrip("/").lower()
-    if normalized.endswith(("/openai", "/openapi")):
+    normalized = str(base_url or "").strip().rstrip("/")
+    try:
+        endpoint = urlsplit(normalized)
+        hostname = endpoint.hostname
+    except ValueError:
         return False
-    if "generativelanguage.googleapis.com" in normalized or is_vertex_express_base_url(normalized):
+    if endpoint.scheme not in {"http", "https"} or not hostname:
+        return False
+    # Empty query/fragment markers also change request URL joins (``…/v1beta?`` is not a base).
+    if "?" in normalized or "#" in normalized:
+        return False
+    hostname = hostname.lower()
+    path = endpoint.path.rstrip("/")
+    if path.lower().endswith(("/openai", "/openapi")):
+        return False
+    if hostname == "generativelanguage.googleapis.com":
         return True
-    if "aiplatform.googleapis.com" in normalized:
-        # A Vertex host with a project path: the OAuth provider's OpenAI-compatible base, which
-        # is not the native surface (the express form above is handled by the check above).
-        return False
+    if hostname.endswith("aiplatform.googleapis.com"):
+        # Vertex express (no project path) is the native surface; the OAuth provider's
+        # OpenAI-compatible ``…/endpoints/openapi`` base is excluded by the path check above.
+        return is_vertex_express_base_url(f"{hostname}{path}")
     # Custom endpoint serving the Gemini native API (CLIProxyAPI and friends).
-    return "/v1beta" in normalized
+    return path.endswith("/v1beta")
 
 
 def gemini_accepts_parameters_json_schema(base_url: str) -> bool:
@@ -330,7 +346,9 @@ def _tool_call_id(tool_call: Dict[str, Any]) -> str:
     return str(tool_call.get("id") or tool_call.get("call_id") or "")
 
 
-def _translate_tool_call_to_gemini(tool_call: Dict[str, Any], include_ids: bool = False) -> Dict[str, Any]:
+def _translate_tool_call_to_gemini(
+    tool_call: Dict[str, Any], include_ids: bool = False, *, allow_studio_sentinel: bool = True,
+) -> Dict[str, Any]:
     fn = tool_call.get("function") or {}
     args_raw = fn.get("arguments", "")
     try:
@@ -340,7 +358,15 @@ def _translate_tool_call_to_gemini(tool_call: Dict[str, Any], include_ids: bool 
     call: Dict[str, Any] = {"name": str(fn.get("name") or ""), "args": args if isinstance(args, dict) else {"_value": args}}
     if include_ids and (call_id := _tool_call_id(tool_call)):
         call["id"] = call_id
-    return {"functionCall": call, "thoughtSignature": _tool_call_extra_signature(tool_call) or _SKIP_SIGNATURE}
+    part: Dict[str, Any] = {"functionCall": call}
+    signature = _tool_call_extra_signature(tool_call)
+    if signature and signature != _SKIP_SIGNATURE:
+        part["thoughtSignature"] = signature
+    elif allow_studio_sentinel:
+        # AI Studio accepts the placeholder for unsigned cross-provider history; a third-party
+        # native proxy may not, so it gets the field omitted instead.
+        part["thoughtSignature"] = _SKIP_SIGNATURE
+    return part
 
 
 def _looks_like_json_schema(node: Any) -> bool:
@@ -417,7 +443,8 @@ def _merge_alternating(contents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _build_gemini_contents(
-    messages: List[Dict[str, Any]], include_tool_call_ids: bool = False, *, is_gemini3: bool = False
+    messages: List[Dict[str, Any]], include_tool_call_ids: bool = False, *, is_gemini3: bool = False,
+    allow_studio_sentinel: bool = True,
 ) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
     system_text_parts: List[str] = []
     contents: List[Dict[str, Any]] = []
@@ -439,7 +466,9 @@ def _build_gemini_contents(
             tool_name = str((tool_call.get("function") or {}).get("name") or "")
             if (call_id := _tool_call_id(tool_call)) and tool_name:
                 tool_name_by_call_id[call_id] = tool_name
-            parts.append(_translate_tool_call_to_gemini(tool_call, include_ids=include_tool_call_ids))
+            parts.append(_translate_tool_call_to_gemini(
+                tool_call, include_ids=include_tool_call_ids, allow_studio_sentinel=allow_studio_sentinel,
+            ))
         if parts:
             contents.append({"role": "model" if role == "assistant" else "user", "parts": parts})
     joined_system = "\n".join(part for part in system_text_parts if part).strip()
@@ -480,7 +509,7 @@ def _translate_tool_choice_to_gemini(tool_choice: Any) -> Optional[Dict[str, Any
 _THINKING_KEYS = (
     ("thinkingBudget", "thinking_budget", (int, float), int),
     ("includeThoughts", "include_thoughts", bool, lambda v: v),
-    ("thinkingLevel", "thinking_level", str, lambda v: v.strip().lower()),
+    ("thinkingLevel", "thinking_level", str, lambda v: v.strip().upper()),
 )
 
 
@@ -519,11 +548,18 @@ def _effective_gemini_max_output_tokens(max_tokens: Optional[int], thinking_conf
 def build_gemini_request(
     *, messages: List[Dict[str, Any]], tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None,
     max_tokens: Optional[int] = None, top_p: Optional[float] = None, stop: Any = None, thinking_config: Any = None,
-    model: str = "", tools_as_json_schema: bool = False,
+    model: str = "", tools_as_json_schema: bool = False, base_url: str = DEFAULT_GEMINI_BASE_URL,
 ) -> Dict[str, Any]:
     # Gemini 3+ both requires tool-call ids and accepts multimodal functionResponse parts.
     is_gemini3 = gemini_requires_tool_call_ids(model)
-    contents, system_instruction = _build_gemini_contents(messages, include_tool_call_ids=is_gemini3, is_gemini3=is_gemini3)
+    try:
+        allow_studio_sentinel = urlsplit(base_url).hostname == "generativelanguage.googleapis.com"
+    except ValueError:
+        allow_studio_sentinel = False
+    contents, system_instruction = _build_gemini_contents(
+        messages, include_tool_call_ids=is_gemini3, is_gemini3=is_gemini3,
+        allow_studio_sentinel=allow_studio_sentinel,
+    )
     optional = (
         ("systemInstruction", system_instruction),
         ("tools", _translate_tools_to_gemini(tools, json_schema=tools_as_json_schema)),
@@ -791,10 +827,11 @@ class GeminiNativeClient:
     HERMES_SKIP_TRANSPORT_WRAP = True
 
     def __init__(
-        self, *, api_key: str, base_url: Optional[str] = None, default_headers: Optional[Dict[str, str]] = None,
+        self, *, api_key: str | Callable[[], str], base_url: Optional[str] = None,
+        default_headers: Optional[Dict[str, str]] = None,
         timeout: Any = None, http_client: Optional[httpx.Client] = None, **_: Any,
     ) -> None:
-        if not (api_key or "").strip():
+        if not callable(api_key) and not (api_key or "").strip():
             raise RuntimeError(_MISSING_KEY_ERROR)
         self.api_key, self.is_closed = api_key, False
         self.base_url = normalize_gemini_base_url(base_url)
@@ -814,8 +851,12 @@ class GeminiNativeClient:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
+    def _resolved_api_key(self) -> str:
+        """key_cmd owns caching/rotation; resolve its callable for each request."""
+        return self.api_key() if callable(self.api_key) else self.api_key
+
     def _headers(self) -> Dict[str, str]:
-        return {"Content-Type": "application/json", "Accept": "application/json", "x-goog-api-key": self.api_key,
+        return {"Content-Type": "application/json", "Accept": "application/json", "x-goog-api-key": self._resolved_api_key(),
                 "User-Agent": f"{_API_CLIENT} (gemini-native)", "X-Goog-Api-Client": _API_CLIENT, **self._default_headers}
 
     @staticmethod
@@ -832,7 +873,7 @@ class GeminiNativeClient:
         request = build_gemini_request(
             messages=messages or [], tools=tools, tool_choice=tool_choice, temperature=temperature, max_tokens=max_tokens,
             top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"), model=model,
-            tools_as_json_schema=gemini_accepts_parameters_json_schema(self.base_url),
+            tools_as_json_schema=gemini_accepts_parameters_json_schema(self.base_url), base_url=self.base_url,
         )
         model = bare_gemini_model_id(model)
         url = f"{self.base_url}/models/{model}:"
@@ -840,7 +881,7 @@ class GeminiNativeClient:
             return self._stream_completion(model, url + "streamGenerateContent?alt=sse", request, timeout)
         response = self._http.post(url + "generateContent", json=request, headers=self._headers(), timeout=timeout)
         if response.status_code != 200:
-            raise gemini_http_error(response, api_key=self.api_key, base_url=self.base_url)
+            raise gemini_http_error(response, api_key=self._resolved_api_key(), base_url=self.base_url)
         try:
             payload = response.json()
         except ValueError as exc:
@@ -855,7 +896,7 @@ class GeminiNativeClient:
             with self._http.stream("POST", url, json=request, headers=headers, timeout=timeout) as response:
                 if response.status_code != 200:
                     raise gemini_http_error(
-                        response, body_text=read_streaming_error_body(response), api_key=self.api_key, base_url=self.base_url,
+                        response, body_text=read_streaming_error_body(response), api_key=self._resolved_api_key(), base_url=self.base_url,
                     )
                 tool_call_indices: Dict[str, Dict[str, Any]] = {}
                 for event in _iter_sse_events(response):

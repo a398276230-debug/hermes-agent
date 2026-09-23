@@ -1,4 +1,5 @@
 import type { SessionMessage } from "./api";
+import { contentToText, toolArgumentsToText } from "./message-content";
 
 /**
  * Read-only transcript poll cadence for the expanded session row.
@@ -24,16 +25,20 @@ function hashText(value: string): number {
 
 function messageSignature(message: SessionMessage): string {
   const toolCalls = message.tool_calls ?? [];
+  // A stored body is not guaranteed to be a string (multimodal rows arrive as
+  // an array of parts), so both the body and each call's arguments go through
+  // the same coercion the renderer uses — `.charCodeAt` on an array is what
+  // used to crash the page.
   let parts = [
     message.role,
     message.tool_name ?? "",
     message.tool_call_id ?? "",
     message.timestamp ?? 0,
-    hashText(message.content ?? ""),
+    hashText(contentToText(message.content)),
   ].join("\u0001");
   for (const call of toolCalls) {
     parts += `\u0002${call.id}\u0001${call.function.name}\u0001${hashText(
-      call.function.arguments,
+      toolArgumentsToText(call.function.arguments),
     )}`;
   }
   return parts;

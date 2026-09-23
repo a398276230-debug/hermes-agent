@@ -555,6 +555,9 @@ async def run_internal_session_turn(self, *, session_id: str, text: str, profile
                 gateway_session_key=None, **overrides, route=route, requested_runtime={},
                 route_source="global", session_history_delivery="1",
                 notification_category=notification_category,
+                # This IS a wake turn (background completion notification): mark the
+                # persisted user row exactly like the HTTP self-post does.
+                wake_turn=True,
             )
             return
         raise RuntimeError(
@@ -762,7 +765,10 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                 # so it stays default-denied until a merge contract exists for that chain;
                 # likewise a caller-supplied conversation_history is authoritative for the
                 # turn and never reads the delivery row, so it is denied the same way.
-                session_history_delivery="1" if run.session_history_delivery else "")
+                session_history_delivery="1" if run.session_history_delivery else "",
+                # Same deployment opt-in as _run_agent: only a run whose continuation
+                # reads SessionDB may receive a post-turn delivery.
+                async_delivery=self._async_delivery_binding(run.session_history_delivery))
             if session_tokens:
                 resets.append((session_tokens, clear_session_vars))
             if run.agent_kwargs["room_dispatch"] is not None:

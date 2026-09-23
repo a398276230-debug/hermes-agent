@@ -674,6 +674,12 @@ class OpenAICompatRoutesMixin:
         # above still applies; it grants no internal ingress or control authority.
         if provided_session_id and body.get("hermes_notification_category") == "diagnostic":
             run_kwargs["notification_category"] = "diagnostic"
+        if provided_session_id and _coerce_request_bool(body.get("hermes_wake_turn"), default=False):
+            # Wake self-post (gateway/wake.py): the gateway notifying an EXISTING session that
+            # a background process/pattern fired. Machinery, not a client prompt — marked so
+            # durable clients can tell the detached delivery apart from a real user turn.
+            # Only the API-key-authenticated self-post sends this field.
+            run_kwargs["wake_turn"] = True
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
             # tool_call_ids with an emitted "running": a "completed" without one (internal/
@@ -718,7 +724,7 @@ class OpenAICompatRoutesMixin:
         outcome, err = await self._run_idempotent(
             request, body, _compute_completion, log_label="chat completions",
             fingerprint_keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream",
-                              "hermes_notification_category"],
+                              "hermes_notification_category", "hermes_wake_turn"],
             route="chat_completions",
         )
         if err is not None:

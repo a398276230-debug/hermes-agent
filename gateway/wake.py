@@ -221,7 +221,11 @@ async def _self_post_chat_completion(adapter: Any, *, text: str, session_id: str
     url = f"http://{host}:{port}/v1/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "X-Hermes-Session-Id": session_id}
     payload = {"model": str(getattr(adapter, "_model_name", "") or "hermes-agent"),
-               "messages": [{"role": "user", "content": text}], "stream": False}
+               "messages": [{"role": "user", "content": text}], "stream": False,
+               # Tells the API server this turn is machinery (gateway wake), so the persisted
+               # user row is stamped ``internal_notification`` and a durable-history client can
+               # identify the detached delivery. Ignored by clients that never send it.
+               "hermes_wake_turn": True}
     if notification_category == "diagnostic":
         payload["hermes_notification_category"] = "diagnostic"
     last_err: Optional[BaseException] = None

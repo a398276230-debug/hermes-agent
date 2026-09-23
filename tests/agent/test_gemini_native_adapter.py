@@ -501,7 +501,7 @@ def test_build_gemini_request_raises_max_output_when_thinking_is_enabled():
     )
 
     assert request["generationConfig"]["maxOutputTokens"] == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
-    assert request["generationConfig"]["thinkingConfig"]["thinkingLevel"] == "high"
+    assert request["generationConfig"]["thinkingConfig"]["thinkingLevel"] == "HIGH"
 
 
 def test_build_gemini_request_does_not_raise_when_thinking_is_disabled():

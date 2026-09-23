@@ -1783,7 +1783,8 @@ def _gemini_native_client(agent, client_kwargs: dict, httpx_verify, *, reason: s
     """Native Gemini client when the base_url is the Gemini API, else None."""
     from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
     base_url = str(client_kwargs.get("base_url", "") or "")
-    if not is_native_gemini_base_url(base_url):
+    # Extracted query params belong to the OpenAI SDK (`default_query`), not native Gemini.
+    if not is_native_gemini_base_url(base_url) or "default_query" in client_kwargs:
         return None
     safe_kwargs = {
         k: v for k, v in client_kwargs.items()
@@ -1853,11 +1854,11 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             agent.provider, reason, shared, agent._client_log_context(),
         )
         return provider_client
-    from agent.auxiliary_client import _GEMINI_NATIVE_PROVIDER_NAMES
-    if agent.provider in _GEMINI_NATIVE_PROVIDER_NAMES:
-        client = _gemini_native_client(agent, client_kwargs, httpx_verify, reason=reason, shared=shared)
-        if client is not None:
-            return client
+    # URL gate (not provider name): custom / custom:* /v1beta uses native too.
+    # Google aliases still match via official native URLs. Query-bearing kwargs stay on OpenAI.
+    client = _gemini_native_client(agent, client_kwargs, httpx_verify, reason=reason, shared=shared)
+    if client is not None:
+        return client
     # TCP keepalives so dead provider connections are detected (~60s) instead of hanging in
     # CLOSE-WAIT. Injected into the local copy only, so each client gets its own httpx.Client;
     # pinned by tests/agent/test_create_openai_client_reuse.py and

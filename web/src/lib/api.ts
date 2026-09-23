@@ -2089,12 +2089,32 @@ export interface WhatsAppOnboardingApplyResponse {
   restart_error?: string;
 }
 
+/**
+ * One multimodal content part. The store JSON-encodes list/dict message bodies
+ * (`SessionMessagesMixin._encode_content`) and the reader decodes them back, so
+ * a body that carried an image arrives as an array of these.
+ */
+export type SessionContentPart =
+  | string
+  | { type?: string; text?: string; content?: unknown; [key: string]: unknown };
+
+/**
+ * Wire shape of a stored message body. A plain string for ordinary text turns;
+ * an array of parts or an object for multimodal/foreign rows. Render it through
+ * `contentToText` — never assume a string.
+ */
+export type SessionMessageContent =
+  | string
+  | SessionContentPart[]
+  | Record<string, unknown>
+  | null;
+
 export interface SessionMessage {
   role: "user" | "assistant" | "system" | "tool";
-  content: string | null;
+  content: SessionMessageContent;
   tool_calls?: Array<{
     id: string;
-    function: { name: string; arguments: string };
+    function: { name: string; arguments: unknown };
   }>;
   tool_name?: string;
   tool_call_id?: string;

@@ -64,6 +64,64 @@ describe("transcriptSignature", () => {
       transcriptSignature([message({ role: "tool", tool_call_id: "call-1" })]),
     );
   });
+
+  // Multimodal rows are persisted as JSON the reader decodes back into parts
+  // (`SessionMessagesMixin._encode_content`), so a stored body is not always a
+  // string. The poll stamp must survive one — `.charCodeAt` on an array is
+  // exactly what used to crash the Sessions page.
+  describe("non-string bodies", () => {
+    const multimodal = (text: string): SessionMessage =>
+      message({
+        content: [
+          { type: "text", text },
+          { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+        ],
+      });
+
+    it("stamps a multimodal body without throwing", () => {
+      expect(transcriptSignature([multimodal("hi")])).toBeTypeOf("string");
+    });
+
+    it("matches for equal multimodal content behind fresh arrays", () => {
+      expect(transcriptSignature([multimodal("hi")])).toBe(
+        transcriptSignature([multimodal("hi")]),
+      );
+    });
+
+    it("changes when a multimodal text part grows", () => {
+      expect(transcriptSignature([multimodal("hi there")])).not.toBe(
+        transcriptSignature([multimodal("hi")]),
+      );
+    });
+
+    it("changes when a non-text part appears", () => {
+      const textOnly = message({ content: [{ type: "text", text: "hi" }] });
+      expect(transcriptSignature([multimodal("hi")])).not.toBe(
+        transcriptSignature([textOnly]),
+      );
+    });
+
+    it("stamps an object body", () => {
+      expect(
+        transcriptSignature([message({ content: { blocks: [{ text: "hi" }] } })]),
+      ).toBe(
+        transcriptSignature([message({ content: { blocks: [{ text: "hi" }] } })]),
+      );
+    });
+
+    it("changes when object tool arguments change", () => {
+      const call = (cmd: string): SessionMessage =>
+        message({
+          content: null,
+          tool_calls: [
+            { id: "call-1", function: { name: "bash", arguments: { cmd } } },
+          ],
+        });
+      expect(transcriptSignature([call("pwd")])).not.toBe(
+        transcriptSignature([call("ls")]),
+      );
+    });
+  });
 });
 
 describe("isPinnedToBottom", () => {

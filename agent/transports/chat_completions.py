@@ -473,6 +473,21 @@ class ChatCompletionsTransport(ProviderTransport):
         """
         _profile = params.get("provider_profile")
         sanitized = self.convert_messages(messages, model=model, base_url=params.get("base_url"), provider_profile=_profile)
+        # Native custom providers share Gemini's reasoning projection. Explicit thinking fields win,
+        # including when supplied with the camelCase spelling under extra_body additions/overrides.
+        from agent.gemini_native_adapter import is_native_gemini_base_url
+
+        if is_native_gemini_base_url(params.get("base_url")):
+            thinking_config = _build_gemini_thinking_config(model, params.get("reasoning_config"))
+            if thinking_config:
+                additions = dict(params.get("extra_body_additions") or {})
+                overrides = (params.get("request_overrides") or {}).get("extra_body") or {}
+                if not any(
+                    key in additions or key in overrides
+                    for key in ("thinking_config", "thinkingConfig")
+                ):
+                    additions["thinking_config"] = thinking_config
+                    params["extra_body_additions"] = additions
         if _profile:
             return self._build_kwargs_from_profile(_profile, model, sanitized, tools, params)
 
