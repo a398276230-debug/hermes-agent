@@ -422,6 +422,59 @@ def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder, st
                 return
 
 
+# Win32 pipe poll interval. Short enough that a live stream still feels continuous,
+# long enough that an idle orphaned pipe costs no measurable CPU.
+PIPE_POLL_INTERVAL_SECONDS = 0.1
+
+
+def windows_pipe_poll(fd: int) -> "Callable[[], int] | None":
+    """Return a zero-arg readiness poll for a Windows anonymous pipe ``fd``, or None.
+
+    ``select()`` cannot poll pipes on Windows, and a bare read there blocks until
+    *every* write handle closes. A backgrounded grandchild inherits our write end,
+    so EOF can never arrive and the read parks forever — taking the stream's own
+    buffer lock with it, which makes any later ``stdout.close()`` deadlock too.
+    ``PeekNamedPipe`` reports the bytes waiting without consuming them, so callers
+    check it first and read only when the read cannot block.
+
+    The probe returns the bytes waiting when the caller may read, a negative
+    sentinel when the pipe is broken/closed (so the read surfaces EOF), and 0
+    after a short idle sleep when the pipe is merely quiet. Returns None when
+    ``fd`` has no Win32 pipe handle (mock/in-memory streams), so the caller keeps
+    its blocking read. Used by both the foreground drain (``_drain_fd_windows``)
+    and ``tools.process_registry``'s background reader loop.
+    """
+    import ctypes
+    import msvcrt
+
+    try:
+        raw_handle = msvcrt.get_osfhandle(fd)
+    except OSError:
+        return None
+    if raw_handle in (-1, 0):
+        return None
+
+    handle = ctypes.c_void_p(raw_handle)
+    kernel32 = ctypes.windll.kernel32
+    available = ctypes.c_ulong(0)
+
+    def _ready() -> int:
+        try:
+            ok = kernel32.PeekNamedPipe(handle, None, 0, None, ctypes.byref(available), None)
+        except OSError:
+            return -1  # let the read surface the failure/EOF
+        if not ok:
+            # ERROR_BROKEN_PIPE (all writers gone) and friends: try the read so it
+            # reports EOF instead of idle-spinning.
+            return -1
+        if available.value:
+            return int(available.value)
+        time.sleep(PIPE_POLL_INTERVAL_SECONDS)
+        return 0
+
+    return _ready
+
+
 def _drain_fd_windows(proc, fd: int, output: _BoundedOutputCollector, decoder, stop=None) -> None:
     """Windows drain: poll ``PeekNamedPipe`` because ``select`` cannot poll pipes.
 
@@ -430,44 +483,29 @@ def _drain_fd_windows(proc, fd: int, output: _BoundedOutputCollector, decoder, s
     so use the Win32 pipe API to check availability before reading and apply the
     same post-exit idle bound as the POSIX drain.
     """
-    import ctypes
-    import msvcrt
-
-    try:
-        raw_handle = msvcrt.get_osfhandle(fd)
-    except OSError:
+    ready = windows_pipe_poll(fd)
+    if ready is None:
         return
-    if raw_handle in (-1, 0):
-        return
-
-    handle = ctypes.c_void_p(raw_handle)
-    kernel32 = ctypes.windll.kernel32
-    available = ctypes.c_ulong(0)
     idle_after_exit = 0
     while True:
         if stop is not None and stop.is_set():
             return
-        try:
-            ok = kernel32.PeekNamedPipe(handle, None, 0, None, ctypes.byref(available), None)
-        except OSError:
-            return
-        if not ok:
-            return
-        if available.value:
+        waiting = ready()
+        if waiting:
             try:
-                chunk = os.read(fd, min(int(available.value), 4096))
+                chunk = os.read(fd, min(waiting, 4096) if waiting > 0 else 4096)
             except (ValueError, OSError):
                 return
             if not chunk:
-                return
+                return  # true EOF — all writers closed
             output.append(decoder.decode(chunk))
             idle_after_exit = 0
-            continue
-        if proc.poll() is not None:
+        elif proc.poll() is not None:
+            # parent gone and the pipe was idle ~100ms; allow two more cycles for a
+            # buffered tail, then stop (a grandchild may hold the pipe).
             idle_after_exit += 1
             if idle_after_exit >= 3:
                 return
-        time.sleep(0.1)
 
 
 def _start_drain_thread(

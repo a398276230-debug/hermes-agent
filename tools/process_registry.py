@@ -582,6 +582,53 @@ _CHECKPOINT_DEFAULTS = {
 }
 
 
+# After the direct child exits, the reader keeps polling the pipe for a short tail window
+# before abandoning it: Windows polls PeekNamedPipe every 0.1s (base_output's
+# PIPE_POLL_INTERVAL_SECONDS), POSIX select() every 0.2s — so three idle polls is
+# ~300ms and ~600ms respectively. Anything already in the pipe is read *before* the
+# count starts, so the window only covers output a surviving grandchild writes later —
+# which we deliberately drop.
+_READER_IDLE_POLLS_AFTER_EXIT = 3
+
+
+def _drain_reader_stream(read_once, wait_readable, poll, on_chunk,
+                         *, idle_limit: int = _READER_IDLE_POLLS_AFTER_EXIT) -> None:
+    """Drain a background process's stdout until EOF or an orphaned pipe is abandoned.
+
+    Platform-neutral control flow so the Windows and POSIX policies are one loop:
+    ``wait_readable()`` returns truthy when ``read_once()`` cannot block (platform
+    poll: ``select()`` on POSIX, ``PeekNamedPipe`` on Windows) and falsy after a short
+    idle sleep. ``read_once()`` returns a decoded chunk, ``""`` for a partial
+    multibyte tail, or None at EOF. ``poll()`` (optional) is the direct child's
+    ``Popen.poll``.
+
+    Exit rules: EOF ends the loop; when the direct child has exited and the pipe
+    stays idle for ``idle_limit`` consecutive polls, abandon it. A backgrounded
+    grandchild inherits the write end, so waiting for EOF can park this thread
+    forever — and with it the stream's buffer lock, which makes the ``stdout.close()``
+    on the finish path deadlock. See #68915, #8340.
+    """
+    idle_after_exit = 0
+    while True:
+        if wait_readable is not None:
+            try:
+                ready = wait_readable()
+            except (ValueError, OSError):
+                return  # fd already closed
+            if not ready:
+                if poll is not None and poll() is not None:
+                    idle_after_exit += 1
+                if idle_after_exit >= idle_limit:
+                    return
+                continue
+        chunk = read_once()
+        if chunk is None:
+            return  # true EOF — all writers closed
+        if chunk:
+            on_chunk(chunk)
+        idle_after_exit = 0
+
+
 class ProcessRegistry(ProcessCheckpointMixin):
     """In-memory registry of running and finished background processes.
     Thread-safe: accessed from executor threads (terminal_tool, process handlers),
@@ -1252,12 +1299,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
         blocks until EOF, landing "live" output in one burst at exit. Orphaned-pipe
         guard: a backgrounded grandchild (``node server.js &``) inherits our pipe's write
         end so EOF never arrives while it lives, which would park this thread and never
-        fire ``notify_on_complete``; on POSIX we ``select()`` and stop draining shortly
-        after the direct child exits (mirrors ``environments/base.py::_wait_for_process``).
-        Windows pipes lack select(), so the lazy ``_reconcile_local_exit`` is the net.
-
-        Windows pipes don't support select(); the blocking path is kept there and the lazy reconcile in
-        poll()/wait() remains the safety net. See #68915, #8340.
+        fire ``notify_on_complete``. The drain stops shortly after the direct child exits
+        once the pipe goes idle: POSIX ``select()``, Windows ``PeekNamedPipe`` (select()
+        cannot poll pipes there, and a bare read1() blocks until every write handle
+        closes). Parking here is not merely a missed notification — the thread holds the
+        stream's buffer lock, so the ``stdout.close()`` on the finish path deadlocks the
+        tool thread that called kill()/poll(). See #68915, #8340.
         """
         first_chunk = True
         # A split multibyte UTF-8 char would become U+FFFD with stateless decoding; the
@@ -1288,39 +1335,27 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     return stdout.read(4096) or None
                 raw = raw_read(4096)
                 return decoder.decode(raw) if raw else None
-            # select() needs a real OS fd; mocked streams (tests, adapters) may lack
-            # fileno() and use the blocking read instead.
+
+            # Readiness poll: select() needs a real OS fd and cannot poll pipes on
+            # Windows; mocked streams (tests, adapters) may lack fileno() and keep the
+            # blocking read.
+            wait_readable = None
             try:
-                fd = stdout.fileno() if raw_read is not None and not _IS_WINDOWS else None
+                fd = stdout.fileno() if raw_read is not None else None
             except Exception:
                 fd = None
             if not (isinstance(fd, int) and fd >= 0):
                 fd = None
             if fd is not None:
-                import select as _select
-            idle_after_exit = 0
-            while True:
-                if fd is not None:
-                    try:
-                        ready, _, _ = _select.select([fd], [], [], 0.2)
-                    except (ValueError, OSError):
-                        break  # fd already closed
-                    if not ready:
-                        # Direct child gone and pipe idle ~200ms: a few more cycles for a
-                        # buffered tail, then stop rather than wait forever on an orphaned
-                        # grandchild's pipe.
-                        if proc.poll() is not None:
-                            # See #68915.
-                            idle_after_exit += 1
-                        if idle_after_exit >= 3:
-                            break
-                        continue
-                chunk = _read_once()
-                if chunk is None:
-                    break  # true EOF — all writers closed
-                if chunk:
-                    _append_chunk(chunk)
-                idle_after_exit = 0
+                if _IS_WINDOWS:
+                    from tools.environments.base_output import windows_pipe_poll
+                    wait_readable = windows_pipe_poll(fd)
+                    if wait_readable is None:
+                        logger.debug("No Win32 pipe handle for %s; using a blocking read", session.id)
+                else:
+                    import select as _select
+                    wait_readable = lambda: bool(_select.select([fd], [], [], 0.2)[0])  # noqa: E731
+            _drain_reader_stream(_read_once, wait_readable, getattr(proc, "poll", None), _append_chunk)
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
         finally:
@@ -1560,6 +1595,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
         the reader loop / kill path. Closing a Popen's stream objects does not
         kill anything — the child has already exited — it only releases the
         parent's pipe FDs, which is exactly the retained-resource leak.
+
+        Blocking here is what turned a parked reader into a hung tool call: the
+        buffered stream's lock is held by whichever thread is inside ``read()``.
+        The reader never performs a blocking read (see ``_drain_reader_stream``), so
+        this returns promptly even while a grandchild still owns the write end.
         """
         proc = session.process
         if proc is not None:

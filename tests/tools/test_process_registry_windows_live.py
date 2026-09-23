@@ -14,14 +14,14 @@ thread) — no mocked spawn.
 from __future__ import annotations
 
 import os
-import sys
+import threading
 import time
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "win32", reason="live Windows background-executor E2E"
-)
+# The ``windows_only`` marker (not a bare ``skipif``) is what makes the OS lane's
+# file selector import this module — see scripts/ci/list_os_marked_tests.py.
+pytestmark = pytest.mark.windows_only
 
 
 @pytest.fixture()
@@ -101,3 +101,76 @@ class TestWindowsSpawnParity:
         result = registry.kill_process(session.id)
         assert result.get("status") in {"killed", "already_exited"}
         assert session.systemd_unit == ""
+
+
+class TestWindowsOrphanedPipe:
+    """A grandchild that outlives the direct child holds our stdout write handle.
+
+    Windows pipes have no ``select()`` and a bare ``read1()`` blocks until every
+    write handle closes, so the reader used to park forever — and it parked while
+    holding the stream's buffer lock, so the ``stdout.close()`` on the finish path
+    deadlocked the tool thread calling ``process_manage kill``/``poll``. Live E2E:
+    real Git Bash, real grandchild, real reader thread (#68915).
+    """
+
+    @staticmethod
+    def _bounded(call, label: str, timeout: float = 15):
+        """Run *call* on a worker thread and fail rather than hang on a deadlock."""
+        out = []
+        worker = threading.Thread(target=lambda: out.append(call()), daemon=True)
+        worker.start()
+        worker.join(timeout=timeout)
+        assert not worker.is_alive(), (
+            f"registry.{label}() deadlocked on stdout.close(); the reader is parked "
+            "on the orphaned pipe"
+        )
+        return out[0]
+
+    def test_orphaned_grandchild_pipe_does_not_park_reader_or_deadlock_poll(
+        self, registry
+    ):
+        # ``disown`` leaves the backgrounded sleep as an orphan that still holds the
+        # inherited stdout pipe; the shell itself exits immediately.
+        session = registry.spawn_local("( sleep 20 ) & disown; exit 0")
+        deadline = time.time() + 20
+        while time.time() < deadline and session.process.poll() is None:
+            time.sleep(0.1)
+        assert session.process.poll() is not None, "direct child should exit at once"
+
+        # poll() reconciles the exited direct child and closes the pipe — the exact
+        # path that deadlocked while the reader held the buffer lock.
+        polled = self._bounded(lambda: registry.poll(session.id), "poll")
+        assert polled["status"] == "exited", polled
+
+        # kill() shares the stream teardown; its verdict varies with the race against
+        # the reader, but it must always come back.
+        killed = self._bounded(lambda: registry.kill_process(session.id), "kill")
+        assert killed.get("status") in {"killed", "already_exited", "error"}, killed
+
+        # The reader itself must have finished rather than lingering parked.
+        deadline = time.time() + 10
+        while time.time() < deadline and session._reader_thread.is_alive():
+            time.sleep(0.05)
+        assert not session._reader_thread.is_alive(), "reader thread never exited"
+
+    def test_windows_pipe_poll_reports_data_idle_and_broken(self):
+        """The readiness poll is what makes a non-blocking read possible: it must
+        report waiting bytes without consuming them, idle as 0, and a closed write
+        end as the read-anyway sentinel (so the read surfaces EOF)."""
+        from tools.environments.base_output import windows_pipe_poll
+
+        r, w = os.pipe()
+        try:
+            poll = windows_pipe_poll(r)
+            assert poll is not None
+            assert poll() == 0  # quiet pipe: sleeps briefly, reports idle
+
+            os.write(w, b"hello")
+            assert poll() > 0
+            assert os.read(r, 4096) == b"hello"
+
+            os.close(w)
+            assert poll() != 0  # broken pipe → attempt the read
+            assert os.read(r, 4096) == b""  # EOF
+        finally:
+            os.close(r)
