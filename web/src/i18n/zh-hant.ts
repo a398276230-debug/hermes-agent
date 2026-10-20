@@ -131,6 +131,8 @@ export const zhHant: Translations = {
     overview: "總覽",
     filterChats: "聊天",
     filterAutomation: "自動化",
+    filterSubagents: "子代理",
+    sourceSubagent: "子代理",
     filterAll: "全部",
     sourceFilter: "工作階段來源",
     anySource: "任何來源",

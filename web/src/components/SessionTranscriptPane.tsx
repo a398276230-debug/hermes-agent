@@ -230,7 +230,7 @@ export function SessionTranscriptPane({
     <>
       <Badge tone="outline" className="text-xs">
         <SourceIcon className={`mr-1 h-3 w-3 ${sourceInfo.color}`} />
-        {session.source ? sourceLabel(session.source) : "local"}
+        {session.source ? sourceLabel(session.source, t.sessions.sourceSubagent) : "local"}
       </Badge>
       {session.model && (
         <>

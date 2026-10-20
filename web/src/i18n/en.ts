@@ -160,6 +160,8 @@ export const en: Translations = {
     overview: "Overview",
     filterChats: "Chats",
     filterAutomation: "Automation",
+    filterSubagents: "Subagents",
+    sourceSubagent: "Subagent",
     filterAll: "All",
     sourceFilter: "Session source",
     anySource: "Any source",

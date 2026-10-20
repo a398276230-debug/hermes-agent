@@ -131,6 +131,8 @@ export const uk: Translations = {
     overview: "Огляд",
     filterChats: "Чати",
     filterAutomation: "Автоматизація",
+    filterSubagents: "Subagents",
+    sourceSubagent: "Subagent",
     filterAll: "Усі",
     sourceFilter: "Джерело сесії",
     anySource: "Будь-яке джерело",

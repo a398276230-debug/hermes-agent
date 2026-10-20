@@ -169,8 +169,8 @@ def get_sessions(
     limit: int = Query(20, ge=0, le=100), offset: int = Query(0, ge=0), min_messages: int = 0,
     archived: str = "exclude", order: str = "created", source: str = None, sources: str = None,
     exclude_sources: str = None, cwd_prefix: str = None, full: bool = False,
-    profile: Optional[str] = None):
-    """List sessions.
+    profile: Optional[str] = None, include_subagents: Optional[bool] = None):
+    """List sessions. ``include_subagents`` overrides the profile's listing preference.
 
     ``order=recent`` sorts by latest activity across the compression chain, so
     a long-running chat stays on page one after it auto-compresses onto a fresh
@@ -194,14 +194,14 @@ def get_sessions(
             # Source scoping: the desktop splits recents (exclude=cron) from
             # the cron-jobs section (source=cron) into two independent lists.
             source_list = _csv(sources)
-            include_subagents, exclude_list = subagent_listing_scope(
+            list_subagents, exclude_list = subagent_listing_scope(
                 Path(db.db_path).parent, source=source or None, sources=source_list or None,
-                exclude_sources=_csv(exclude_sources) or None)
+                exclude_sources=_csv(exclude_sources) or None, include_subagents=include_subagents)
             scope = dict(
                 source=source or None, sources=source_list or None,
                 exclude_sources=exclude_list or None, cwd_prefix=(cwd_prefix or None),
                 min_message_count=min_message_count, include_archived=include_archived,
-                archived_only=archived_only, include_subagents=include_subagents)
+                archived_only=archived_only, include_subagents=list_subagents)
             sessions = db.list_sessions_rich(
                 limit=limit,
                 offset=offset,
@@ -258,7 +258,7 @@ def _is_compression_edge(child: dict, parent: dict) -> bool:
 @search_router.get("/api/sessions/search")
 async def search_sessions(
     q: str = "", limit: int = 20, profile: Optional[str] = None, source: str = None,
-    sources: str = None, exclude_sources: str = None):
+    sources: str = None, exclude_sources: str = None, include_subagents: Optional[bool] = None):
     """Search sessions by ID (first) plus FTS5 message content.
 
     Results are deduped by compression lineage, not raw ``session_id``:
@@ -276,7 +276,9 @@ async def search_sessions(
             source_filter = source or None
             source_list = _csv(sources)
             include_sources = [source_filter] if source_filter else (source_list or None)
-            exclude_list = _csv(exclude_sources)
+            list_subagents, exclude_list = subagent_listing_scope(
+                Path(db.db_path).parent, source=source_filter, sources=source_list or None,
+                exclude_sources=_csv(exclude_sources) or None, include_subagents=include_subagents)
             now = time.time()
 
             def get_session(sid):
@@ -372,7 +374,8 @@ async def search_sessions(
             # Direct ID matches first (pasted ids never appear in message text).
             for row in db.search_sessions_by_id(
                 q, limit=safe_limit, include_archived=True, source=source_filter,
-                sources=source_list or None, exclude_sources=exclude_list or None):
+                sources=source_list or None, exclude_sources=exclude_list or None,
+                include_subagents=list_subagents):
                 sid = row.get("id")
                 preview = (row.get("preview") or "").strip()
                 snippet = preview or f"Session ID: {sid}"
@@ -477,7 +480,7 @@ async def get_session_stats(profile: Optional[str] = None):
             "by_source": {}}
         try:
             out["by_source"] = db.session_count_by_source(
-                include_archived=True, exclude_children=True)
+                include_archived=True, exclude_children=True, include_subagents=True)
         except Exception:
             pass
         return out

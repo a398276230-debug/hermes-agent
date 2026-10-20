@@ -405,7 +405,8 @@ def get_profiles_sessions(
     # over-fetches ``limit + offset``.
     limit: int = Query(20, ge=0, le=500), offset: int = Query(0, ge=0), min_messages: int = 0,
     archived: str = "exclude", order: str = "recent", profile: str = "all",
-    source: str = None, sources: str = None, exclude_sources: str = None, full: bool = False):
+    source: str = None, sources: str = None, exclude_sources: str = None, full: bool = False,
+    include_subagents: Optional[bool] = None):
     """Unified, read-only session list aggregated across ALL profiles: opens each profile's
     ``state.db`` directly (no dashboard backend per profile) and tags rows with their owning
     ``profile``. Rows omit ``system_prompt`` / ``model_config`` unless ``full=1`` — same
@@ -434,10 +435,10 @@ def get_profiles_sessions(
     now = time.time()
     for name, home in targets:
         def _read(db, name=name, home=home):
-            include_subagents, exclude = subagent_listing_scope(
+            list_subagents, exclude = subagent_listing_scope(
                 home, source=filters["source"], sources=filters["sources"],
-                exclude_sources=filters["exclude_sources"])
-            scoped = {**filters, "exclude_sources": exclude, "include_subagents": include_subagents}
+                exclude_sources=filters["exclude_sources"], include_subagents=include_subagents)
+            scoped = {**filters, "exclude_sources": exclude, "include_subagents": list_subagents}
             rows = db.list_sessions_rich(
                 limit=per_profile, offset=0, order_by_last_active=order == "recent",
                 # Same SQL-level blob skip as /api/sessions.
@@ -459,7 +460,8 @@ def get_profiles_sessions(
 @_sidebar_singleflight_cache
 def get_profiles_sessions_sidebar(
     recents_profile: str = "all", recents_limit: int = 20, recents_exclude: str = None,
-    cron_limit: int = 50, messaging_limit: int = 100, messaging_exclude: str = None):
+    cron_limit: int = 50, messaging_limit: int = 100, messaging_exclude: str = None,
+    include_subagents: Optional[bool] = None):
     """Batched sidebar session slices (recents / cron / messaging) — one profile-DB open per
     refresh instead of three ``/api/profiles/sessions`` calls. Same row projection and 300s
     active heuristic as the per-slice endpoint; all slices use ``min_messages=1`` /
@@ -467,7 +469,8 @@ def get_profiles_sessions_sidebar(
 
     ``recents_profile`` scopes the WHOLE payload, not just recents — the sidebar has one
     scope, so a concrete profile must never show another profile's Telegram threads or
-    cronjobs; ``all`` asks for everything.
+    cronjobs; ``all`` asks for everything. ``include_subagents`` overrides each profile's
+    preference for recents ONLY; cron and messaging never include delegate runs.
 
     See #42651, #65710, #70629.
     """
@@ -513,7 +516,8 @@ def get_profiles_sessions_sidebar(
         db_path = Path(home) / "state.db"
         if not db_path.exists():
             continue
-        recents_subagents = subagent_listing_scope(home, exclude_sources=recents_exclude_list or None)
+        recents_subagents = subagent_listing_scope(
+            home, exclude_sources=recents_exclude_list or None, include_subagents=include_subagents)
         profile_cache_key = (str(db_path), _sidebar_db_fingerprint(db_path), cap["recents"],
                              tuple(recents_exclude_list), cap["cron"], cap["messaging"],
                              tuple(messaging_exclude_list), recents_subagents[0])

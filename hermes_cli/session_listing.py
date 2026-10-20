@@ -32,19 +32,22 @@ def show_subagent_sessions(hermes_home: str | Path) -> bool:
 
 def subagent_listing_scope(
     hermes_home: str | Path, *, source: str | None = None, sources: list[str] | None = None,
-    exclude_sources: list[str] | None = None,
+    exclude_sources: list[str] | None = None, include_subagents: bool | None = None,
 ) -> tuple[bool, list[str] | None]:
     """``(include_subagents, exclude_sources)`` for one human-facing session list (#97202).
 
-    With ``sessions.show_subagents`` on, delegate runs join a list that is not scoped to named
-    sources and either has no exclusions or excludes the ``subagent`` source itself (the desktop
-    recents shape); that exclusion is dropped so the runs actually land. A slice that excludes
-    other sources without ``subagent`` (the per-platform messaging lists) keeps its shape.
+    Omitted overrides preserve config policy: only unscoped lists with no exclusions or a
+    ``subagent`` exclusion (desktop recents) may widen. Explicit True also permits a selected
+    ``subagent`` source and drops its exclusion, but never widens unrelated source slices.
+    Explicit False suppresses runs regardless of the profile's config.
     """
     excluded = list(exclude_sources or [])
-    if source or sources or (excluded and SUBAGENT_SOURCE not in excluded):
-        return False, exclude_sources
-    if not show_subagent_sessions(hermes_home):
+    if include_subagents is None:
+        if source or sources or (excluded and SUBAGENT_SOURCE not in excluded):
+            return False, exclude_sources
+        include_subagents = show_subagent_sessions(hermes_home)
+    selected = [source] if source else sources
+    if not include_subagents or (selected and SUBAGENT_SOURCE not in selected):
         return False, exclude_sources
     return True, [s for s in excluded if s != SUBAGENT_SOURCE] or None
 

@@ -131,6 +131,8 @@ export const tr: Translations = {
     overview: "Genel bakış",
     filterChats: "Sohbetler",
     filterAutomation: "Otomasyon",
+    filterSubagents: "Subagents",
+    sourceSubagent: "Subagent",
     filterAll: "Tümü",
     sourceFilter: "Oturum kaynağı",
     anySource: "Herhangi bir kaynak",

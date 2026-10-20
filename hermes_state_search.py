@@ -1212,7 +1212,8 @@ class SessionSearchMixin:
 
     def search_sessions_by_id(
         self, query: str, limit: int = 20, include_archived: bool = True, source: str = None,
-        sources: List[str] = None, exclude_sources: List[str] = None) -> List[Dict[str, Any]]:
+        sources: List[str] = None, exclude_sources: List[str] = None,
+        include_subagents: bool = False) -> List[Dict[str, Any]]:
         """Search surfaced sessions by exact/prefix/substring session id. Also matches
         ``_lineage_root_id`` so an old compression root id resolves to the live continuation."""
         needle = (query or "").strip().lower()
@@ -1222,7 +1223,8 @@ class SessionSearchMixin:
         # chain) into SQL; over-fetch so the in-Python ranking has candidates.
         candidates = self.list_sessions_rich(
             source=source, sources=sources, exclude_sources=exclude_sources, limit=max(limit * 4, limit),
-            offset=0, include_archived=include_archived, order_by_last_active=True, id_query=needle)
+            offset=0, include_archived=include_archived, order_by_last_active=True, id_query=needle,
+            include_subagents=include_subagents)
 
         def score(row: Dict[str, Any]) -> int:
             normalized = [v.lower() for v in (str(row.get("id") or ""), str(row.get("_lineage_root_id") or "")) if v]

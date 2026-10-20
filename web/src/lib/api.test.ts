@@ -89,6 +89,22 @@ describe("fetchJSON", () => {
   });
 });
 
+describe("api.getSessions", () => {
+  it("serializes both explicit visibility values and leaves the default unset", async () => {
+    const fetchMock = jsonFetchMock({ sessions: [] });
+    vi.stubGlobal("fetch", fetchMock);
+    for (const includeSubagents of [undefined, true, false]) {
+      await api.getSessions(20, 0, { profile: "worker", source: "subagent", includeSubagents });
+      const url = new URL(String(fetchMock.mock.lastCall?.[0]), "http://localhost");
+      expect(url.searchParams.get("include_subagents")).toBe(
+        includeSubagents === undefined ? null : String(includeSubagents),
+      );
+      expect(url.searchParams.get("profile")).toBe("worker");
+      expect(url.searchParams.get("source")).toBe("subagent");
+    }
+  });
+});
+
 describe("api.getModelOptions", () => {
   it("requests a live model refresh when asked", async () => {
     vi.stubGlobal("window", {});

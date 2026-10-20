@@ -131,6 +131,8 @@ export const hu: Translations = {
     overview: "Áttekintés",
     filterChats: "Csevegések",
     filterAutomation: "Automatizálás",
+    filterSubagents: "Subagents",
+    sourceSubagent: "Subagent",
     filterAll: "Összes",
     sourceFilter: "Munkamenet forrása",
     anySource: "Bármely forrás",
