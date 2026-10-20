@@ -1480,12 +1480,12 @@ class SessionSessionsMixin:
 
     def session_count_by_source(
         self, *, include_archived: bool = False, archived_only: bool = False,
-        exclude_children: bool = False,
+        exclude_children: bool = False, include_subagents: bool = False,
     ) -> Dict[str, int]:
-        """``{source: count}`` via one GROUP BY; ``exclude_children`` mirrors listing visibility."""
+        """``{source: count}`` via one GROUP BY; visibility matches session listing."""
         where_clauses, params = _session_filter_where(
             exclude_children=exclude_children, archived_only=archived_only,
-            include_archived=include_archived,
+            include_archived=include_archived, include_subagents=include_subagents,
         )
         with self._read_ctx() as conn:
             if self._conn is None:
