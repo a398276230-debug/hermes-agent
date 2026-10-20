@@ -131,6 +131,8 @@ export const ja: Translations = {
     overview: "概要",
     filterChats: "チャット",
     filterAutomation: "自動化",
+    filterSubagents: "Subagents",
+    sourceSubagent: "Subagent",
     filterAll: "すべて",
     sourceFilter: "セッションのソース",
     anySource: "すべてのソース",

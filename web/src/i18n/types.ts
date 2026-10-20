@@ -177,6 +177,8 @@ export interface Translations {
     overview: string;
     filterChats: string;
     filterAutomation: string;
+    filterSubagents: string;
+    sourceSubagent: string;
     filterAll: string;
     sourceFilter: string;
     anySource: string;

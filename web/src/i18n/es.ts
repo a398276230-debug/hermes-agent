@@ -131,6 +131,8 @@ export const es: Translations = {
     overview: "Resumen",
     filterChats: "Chats",
     filterAutomation: "Automatización",
+    filterSubagents: "Subagents",
+    sourceSubagent: "Subagent",
     filterAll: "Todas",
     sourceFilter: "Origen de la sesión",
     anySource: "Cualquier origen",

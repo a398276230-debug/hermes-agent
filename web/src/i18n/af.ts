@@ -131,6 +131,8 @@ export const af: Translations = {
     overview: "Oorsig",
     filterChats: "Geselse",
     filterAutomation: "Outomatisering",
+    filterSubagents: "Subagents",
+    sourceSubagent: "Subagent",
     filterAll: "Alles",
     sourceFilter: "Sessiebron",
     anySource: "Enige bron",

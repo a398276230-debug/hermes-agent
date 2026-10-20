@@ -131,6 +131,8 @@ export const ga: Translations = {
     overview: "Forbhreathnú",
     filterChats: "Comhráite",
     filterAutomation: "Uathoibriú",
+    filterSubagents: "Subagents",
+    sourceSubagent: "Subagent",
     filterAll: "Uile",
     sourceFilter: "Foinse an tseisiúin",
     anySource: "Foinse ar bith",

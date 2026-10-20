@@ -25,11 +25,9 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { formatSessionPruneResult } from "@/lib/session-prune";
+import { sessionCategoryQuery } from "@/lib/session-filters";
 import { shouldRefreshSessions } from "@/lib/session-refresh";
 import {
-  AUTOMATION_SESSION_SOURCES,
-  NO_MATCHING_SESSION_SOURCE,
-  isAutomationSource,
   sourceBelongsToCategory,
   sourceLabel,
   sourceVisual,
@@ -169,6 +167,7 @@ export default function SessionsPage() {
     useState<SourceSelectionsByCategory>({
       chats: null,
       automation: null,
+      subagents: null,
       all: null,
     });
   const [sourceMenuOpen, setSourceMenuOpen] = useState(false);
@@ -239,35 +238,10 @@ export default function SessionsPage() {
     [allSourceOptions],
   );
 
-  const sessionQueryOptions = useMemo(() => {
-    if (selectedSources !== null) {
-      if (selectedSources.length === 0) {
-        return allSourceNames.length > 0
-          ? { excludeSources: allSourceNames }
-          : { source: NO_MATCHING_SESSION_SOURCE };
-      }
-      if (selectedSources.length === 1) {
-        return { source: selectedSources[0] };
-      }
-      const selected = new Set(selectedSources);
-      const excludedSources = allSourceNames.filter(
-        (source) => !selected.has(source),
-      );
-      return excludedSources.length > 0 ? { excludeSources: excludedSources } : {};
-    }
-    if (sessionCategory === "chats") {
-      return { excludeSources: AUTOMATION_SESSION_SOURCES };
-    }
-    if (sessionCategory === "automation") {
-      const excludedSources = allSourceNames.filter(
-        (source) => !isAutomationSource(source),
-      );
-      return excludedSources.length > 0
-        ? { excludeSources: excludedSources }
-        : { sources: AUTOMATION_SESSION_SOURCES };
-    }
-    return {};
-  }, [selectedSources, sessionCategory, allSourceNames]);
+  const sessionQueryOptions = useMemo(
+    () => sessionCategoryQuery(sessionCategory, selectedSources),
+    [sessionCategory, selectedSources],
+  );
 
   const categoryDefaultSources = useMemo(() => {
     return allSourceNames.filter((source) =>
@@ -291,16 +265,18 @@ export default function SessionsPage() {
   );
 
   const defaultSourceFilterLabel = useMemo(() => {
+    if (sessionCategory === "subagents") return t.sessions.filterSubagents;
     if (sessionCategory === "chats") return "Any chat source";
     if (sessionCategory === "automation") return "Any automation source";
     return t.sessions.anySource;
-  }, [sessionCategory, t.sessions.anySource]);
+  }, [sessionCategory, t.sessions.anySource, t.sessions.filterSubagents]);
 
   const sourceMenuTitle = useMemo(() => {
+    if (sessionCategory === "subagents") return t.sessions.filterSubagents;
     if (sessionCategory === "chats") return "Chat sources";
     if (sessionCategory === "automation") return "Automation sources";
     return t.sessions.sourceFilter;
-  }, [sessionCategory, t.sessions.sourceFilter]);
+  }, [sessionCategory, t.sessions.sourceFilter, t.sessions.filterSubagents]);
 
   const sourceFilterLabel = useMemo(() => {
     if (selectedSources === null) {
@@ -310,10 +286,10 @@ export default function SessionsPage() {
       return "No sources";
     }
     if (selectedSources.length === 1) {
-      return sourceLabel(selectedSources[0]);
+      return sourceLabel(selectedSources[0], t.sessions.sourceSubagent);
     }
     return `${selectedSources.length} sources`;
-  }, [defaultSourceFilterLabel, selectedSources]);
+  }, [defaultSourceFilterLabel, selectedSources, t.sessions.sourceSubagent]);
 
   const refreshEmptyCount = useCallback(() => {
     api
@@ -1115,6 +1091,7 @@ export default function SessionsPage() {
             onChange={updateSessionCategory}
             options={[
               { value: "chats", label: t.sessions.filterChats },
+              { value: "subagents", label: t.sessions.filterSubagents },
               { value: "automation", label: t.sessions.filterAutomation },
               { value: "all", label: t.sessions.filterAll },
             ]}
@@ -1179,7 +1156,7 @@ export default function SessionsPage() {
                               event.stopPropagation();
                               toggleSourceFilter(source);
                             }}
-                            aria-label={`${t.sessions.sourceFilter}: ${sourceLabel(source)}`}
+                            aria-label={`${t.sessions.sourceFilter}: ${sourceLabel(source, t.sessions.sourceSubagent)}`}
                           />
                           <button
                             type="button"
@@ -1188,7 +1165,7 @@ export default function SessionsPage() {
                           >
                             <SourceIcon className={`h-3.5 w-3.5 shrink-0 ${visual.color}`} />
                             <span className="min-w-0 flex-1 truncate">
-                              {sourceLabel(source)}
+                              {sourceLabel(source, t.sessions.sourceSubagent)}
                             </span>
                             <span className="shrink-0 tabular-nums text-muted-foreground">
                               {count}
@@ -1639,7 +1616,7 @@ export default function SessionsPage() {
                       className="shrink-0 self-start text-xs sm:self-center"
                     >
                       <Database className="mr-1 h-3 w-3" />
-                      {s.source ? sourceLabel(s.source) : "local"}
+                      {s.source ? sourceLabel(s.source, t.sessions.sourceSubagent) : "local"}
                     </Badge>
                   </div>
                 ))}

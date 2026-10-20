@@ -328,6 +328,7 @@ export interface SessionQueryOptions {
   source?: string | null;
   sources?: string[];
   excludeSources?: string[];
+  includeSubagents?: boolean;
 }
 
 function normalizeSessionQueryOptions(
@@ -352,6 +353,9 @@ function appendSessionFilters(url: string, options: SessionQueryOptions): string
   }
   if (options.excludeSources && options.excludeSources.length > 0) {
     next = appendQueryParam(next, "exclude_sources", options.excludeSources.join(","));
+  }
+  if (options.includeSubagents !== undefined) {
+    next = appendQueryParam(next, "include_subagents", String(options.includeSubagents));
   }
   return appendProfileParam(next, options.profile);
 }

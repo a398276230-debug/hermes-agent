@@ -10,6 +10,7 @@
  * disagree about what a source is.
  */
 import {
+  Bot,
   Clock,
   Database,
   Globe,
@@ -20,7 +21,7 @@ import {
   Terminal,
 } from "lucide-react";
 
-export type SessionFilterCategory = "chats" | "automation" | "all";
+export type SessionFilterCategory = "chats" | "subagents" | "automation" | "all";
 export type SourceSelectionsByCategory = Record<
   SessionFilterCategory,
   string[] | null
@@ -28,6 +29,7 @@ export type SourceSelectionsByCategory = Record<
 
 export const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
   {
+    subagent: { icon: Bot, color: "text-[oklch(0.65_0.15_280)]" },
     cli: { icon: Terminal, color: "text-primary" },
     tui: { icon: Terminal, color: "text-primary" },
     telegram: { icon: MessageCircle, color: "text-[oklch(0.65_0.15_250)]" },
@@ -75,12 +77,15 @@ export function sourceBelongsToCategory(
   category: SessionFilterCategory,
 ): boolean {
   if (category === "all") return true;
+  if (category === "subagents") return source === "subagent";
   if (category === "automation") return isAutomationSource(source);
-  return !isAutomationSource(source);
+  return source !== "subagent" && !isAutomationSource(source);
 }
 
-export function sourceLabel(source: string): string {
+export function sourceLabel(source: string, subagentLabel = "Subagent"): string {
   switch (source) {
+    case "subagent":
+      return subagentLabel;
     case "api_server":
       return "API server";
     case "acp":

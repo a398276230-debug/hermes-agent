@@ -131,6 +131,8 @@ export const ru: Translations = {
     overview: "Обзор",
     filterChats: "Чаты",
     filterAutomation: "Автоматизация",
+    filterSubagents: "Subagents",
+    sourceSubagent: "Subagent",
     filterAll: "Все",
     sourceFilter: "Источник сессии",
     anySource: "Любой источник",

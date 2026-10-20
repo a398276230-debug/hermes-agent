@@ -130,6 +130,8 @@ export const zh: Translations = {
     overview: "概览",
     filterChats: "聊天",
     filterAutomation: "自动化",
+    filterSubagents: "子代理",
+    sourceSubagent: "子代理",
     filterAll: "全部",
     sourceFilter: "会话来源",
     anySource: "任意来源",

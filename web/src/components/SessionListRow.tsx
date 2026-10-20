@@ -276,7 +276,7 @@ export function SessionListRow({
               <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
                 <Badge tone="outline" className="shrink-0 text-xs">
                   <SourceIcon className={`mr-1 h-3 w-3 ${sourceInfo.color}`} />
-                  {session.source ? sourceLabel(session.source) : "local"}
+                  {session.source ? sourceLabel(session.source, t.sessions.sourceSubagent) : "local"}
                 </Badge>
                 {session.model && (
                   <>

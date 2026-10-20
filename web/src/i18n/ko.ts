@@ -131,6 +131,8 @@ export const ko: Translations = {
     overview: "개요",
     filterChats: "채팅",
     filterAutomation: "자동화",
+    filterSubagents: "Subagents",
+    sourceSubagent: "Subagent",
     filterAll: "전체",
     sourceFilter: "세션 소스",
     anySource: "모든 소스",
