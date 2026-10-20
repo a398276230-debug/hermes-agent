@@ -93,13 +93,17 @@ def _session_filter_where(
     *, exclude_children: bool = False, source: str = None, sources: List[str] = None,
     session_key: str = None, exclude_sources: List[str] = None, cwd_prefix: str = None,
     min_message_count: int = 0, archived_only: bool = False, include_archived: bool = False,
+    include_subagents: bool = False,
 ) -> Tuple[List[str], List[Any]]:
     """Shared ``sessions s`` WHERE builder so counts line up with listed rows. ``exclude_children``
     hides sub-agent runs and compression continuations but keeps branch/reset children
-    (``_LISTABLE_CHILD_SQL``). Clause order is part of the SQL text contract."""
+    (``_LISTABLE_CHILD_SQL``); ``include_subagents`` re-admits the sub-agent runs only
+    (``sessions.show_subagents``). Clause order is part of the SQL text contract."""
     where: List[str] = []
     params: List[Any] = []
-    if exclude_children:
+    if exclude_children and include_subagents:
+        where.append(f"({_LISTABLE_CHILD_SQL} OR {_delegate_from_json('s.model_config')} IS NOT NULL)")
+    elif exclude_children:
         where += [_LISTABLE_CHILD_SQL, f"{_delegate_from_json('s.model_config')} IS NULL"]
     # Show roots and user-visible branch/reset sessions, while still hiding sub-agent runs and compression
     # continuations. All four carry parent_session_id, so the shared predicate classifies the edge from
@@ -1249,15 +1253,18 @@ class SessionSessionsMixin:
         order_by_last_active: bool = False, include_archived: bool = False, archived_only: bool = False,
         id_query: str = None, search_query: str = None, compact_rows: bool = False,
         include_pinned: bool = False, session_key: str = None, include_hidden: bool = False,
+        include_subagents: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
         by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
-        ``include_pinned`` back-fills pins the page missed, still obeying the other filters."""
+        ``include_pinned`` back-fills pins the page missed, still obeying the other
+        filters except archived: a pin is an explicit keep, so a pinned row stamped
+        archived must still return."""
         self.flush_token_counts()  # rows carry token/cost totals
         where_clauses, params = _session_filter_where(
             exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
-            archived_only=archived_only, include_archived=include_archived,
+            archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
         )
         # The archived-only view is the recovery surface for rows that dropped out of every
         # default list: a session that is archived AND hidden (Bot Mode marks its sessions
@@ -1266,7 +1273,6 @@ class SessionSessionsMixin:
         if not include_hidden and not archived_only:
             where_clauses.append("s.hidden = 0")
         where_sql = _where_sql(where_clauses)
-        base_where_params = list(params)  # pinned back-fill reuses the WHERE before LIMIT/OFFSET
         # Shared projection head of the three list queries (whitespace is part of the SQL text).
         select_head = (
             f"SELECT {self._compact_session_cols() if compact_rows else 's.*'}"
@@ -1327,17 +1333,28 @@ class SessionSessionsMixin:
             params.extend([limit, offset])
         sessions = [self._list_row(row) for row in self._read_all(query, params)]
         # Pinned back-fill runs BEFORE compression projection so a back-filled root
-        # projects to its tip like any other row.
+        # projects to its tip like any other row. Do not inherit the archived
+        # constraint: the sidebar lists with include_archived=False, and a pin
+        # must stay reachable even when that row is also archived.
         if include_pinned:
             seen_ids = {s["id"] for s in sessions}
-            pinned_where = f"{where_sql} AND s.pinned = 1" if where_sql else "WHERE s.pinned = 1"
+            pinned_clauses, pinned_params = _session_filter_where(
+                exclude_children=not include_children, source=source, sources=sources,
+                session_key=session_key, exclude_sources=exclude_sources, cwd_prefix=cwd_prefix,
+                min_message_count=min_message_count, archived_only=False, include_archived=True,
+                include_subagents=include_subagents,
+            )
+            if not include_hidden and not archived_only:
+                pinned_clauses.append("s.hidden = 0")
+            pinned_clauses.append("s.pinned = 1")
+            pinned_where = _where_sql(pinned_clauses)
             pinned_query = f"""
                 {select_head}{_sql_session_last_active("s")} AS last_active
                 {from_sessions}
                 {pinned_where}
                 ORDER BY s.started_at DESC
             """
-            for row in self._read_all(pinned_query, base_where_params):
+            for row in self._read_all(pinned_query, pinned_params):
                 s = self._list_row(row)
                 if s["id"] not in seen_ids:
                     seen_ids.add(s["id"])
@@ -1447,13 +1464,13 @@ class SessionSessionsMixin:
     def session_count(
         self, source: str = None, sources: List[str] = None, cwd_prefix: str = None,
         min_message_count: int = 0, include_archived: bool = False, archived_only: bool = False,
-        exclude_children: bool = False, exclude_sources: List[str] = None,
+        exclude_children: bool = False, exclude_sources: List[str] = None, include_subagents: bool = False,
     ) -> int:
         """Count sessions with list_sessions_rich's filters so a paired "load more" total matches."""
         where_clauses, params = _session_filter_where(
             exclude_children=exclude_children, source=source, sources=sources,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
-            archived_only=archived_only, include_archived=include_archived,
+            archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
         )
         return self._read_one(f"SELECT COUNT(*) FROM sessions s{_where_sql(where_clauses, ' ')}", params)[0]
 
