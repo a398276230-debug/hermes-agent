@@ -7,6 +7,7 @@
 /_pycache/
 *.pyc*
 __pycache__/
+roming/
 act/
 .act-sandbox-agent.*
 .venv/
